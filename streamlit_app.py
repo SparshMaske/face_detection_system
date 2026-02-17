@@ -1,4 +1,5 @@
 import os
+from urllib.parse import urlparse
 
 import streamlit as st
 import streamlit.components.v1 as components
@@ -44,6 +45,19 @@ def _secret_value(name: str) -> str:
     return str(value).strip()
 
 
+def _is_streamlit_cloud() -> bool:
+    truthy = {"1", "true", "yes", "on"}
+    return (
+        os.getenv("STREAMLIT_SHARING_MODE", "").strip().lower() in truthy
+        or os.getenv("IS_STREAMLIT_CLOUD", "").strip().lower() in truthy
+    )
+
+
+def _is_http_url(url: str) -> bool:
+    parsed = urlparse(url)
+    return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
+
+
 query_app = _query_param("app").strip()
 secret_app = _secret_value("STREAMLIT_EMBED_URL")
 if not secret_app:
@@ -56,6 +70,7 @@ if not env_app:
 if not env_app:
     env_app = os.getenv("APP_URL", "").strip()
 embed_url = query_app or secret_app or env_app
+is_cloud = _is_streamlit_cloud()
 
 if query_app:
     st.info(f"Using app URL from query param: {query_app}")
@@ -66,6 +81,17 @@ elif env_app:
 
 if not embed_url:
     st.error("Missing hosted frontend URL for Streamlit Cloud deployment.")
+    manual_url = st.text_input(
+        "Frontend URL",
+        value="",
+        placeholder="https://your-frontend-url",
+    ).strip()
+    if st.button("Open App"):
+        if _is_http_url(manual_url):
+            st.query_params["app"] = manual_url
+            st.rerun()
+        else:
+            st.error("Please enter a valid URL (http/https).")
     st.markdown(
         """
         Set your frontend URL using one of these:
@@ -82,5 +108,12 @@ if not embed_url:
         """
     )
     st.stop()
+
+if not _is_http_url(embed_url):
+    st.error("Invalid frontend URL. Use a full URL such as `https://your-frontend-url`.")
+    st.stop()
+
+if is_cloud and embed_url.startswith("http://"):
+    st.warning("Streamlit Cloud is HTTPS. Use an `https://` frontend URL to avoid browser blocking.")
 
 components.iframe(embed_url, height=1200, scrolling=True)
