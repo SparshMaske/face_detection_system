@@ -169,6 +169,9 @@ def _render_local_frontend(api_base_url: str) -> None:
     <div id="root"></div>
     <div id="streamlit-runtime-error" style="display:none;white-space:pre-wrap;background:#2a1114;color:#fecaca;padding:12px;margin:8px;border-radius:8px;font-family:monospace;font-size:12px;"></div>
     <script>
+      if (!window.location.hash) {{
+        window.location.hash = '#/login';
+      }}
       window.addEventListener('error', function (event) {{
         var box = document.getElementById('streamlit-runtime-error');
         if (!box) return;
@@ -181,12 +184,21 @@ def _render_local_frontend(api_base_url: str) -> None:
         box.style.display = 'block';
         box.textContent = 'Frontend unhandled promise rejection: ' + String(event.reason || 'Unknown reason');
       }});
+      setTimeout(function () {{
+        var box = document.getElementById('streamlit-runtime-error');
+        var root = document.getElementById('root');
+        if (!box || !root) return;
+        if (root.childElementCount === 0 && box.style.display === 'none') {{
+          box.style.display = 'block';
+          box.textContent = 'Frontend did not mount. Check Streamlit cache and redeploy latest commit.';
+        }}
+      }}, 3000);
     </script>
     <script>{js_bundle}</script>
   </body>
 </html>
 """
-    components.html(html, height=1600, scrolling=True)
+    components.html(html, height=1000, scrolling=True)
 
 
 api_from_query = _query_param("api")

@@ -18,6 +18,20 @@ const isAuthFailure = (error) => {
   return msg.includes('token') || msg.includes('jwt') || msg.includes('subject');
 };
 
+const redirectToLogin = () => {
+  const protocol = window?.location?.protocol;
+  const isEmbeddedDoc = ['about:', 'data:', 'blob:'].includes(protocol);
+  if (isEmbeddedDoc) {
+    if (window.location.hash !== '#/login') {
+      window.location.hash = '#/login';
+    }
+    return;
+  }
+  if (window.location.pathname !== '/login') {
+    window.location.href = '/login';
+  }
+};
+
 // Add JWT token to every request
 api.interceptors.request.use(
   (config) => {
@@ -46,9 +60,7 @@ api.interceptors.response.use(
     const originalRequest = error.config || {};
     if (originalRequest._retry) {
       authService.logout();
-      if (window.location.pathname !== '/login') {
-        window.location.href = '/login';
-      }
+      redirectToLogin();
       return Promise.reject(error);
     }
 
@@ -61,9 +73,7 @@ api.interceptors.response.use(
     }
 
     authService.logout();
-    if (window.location.pathname !== '/login') {
-      window.location.href = '/login';
-    }
+    redirectToLogin();
     return Promise.reject(error);
   }
 );

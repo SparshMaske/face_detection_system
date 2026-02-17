@@ -5,10 +5,45 @@ const API_URL = `${API_BASE_URL}/auth`;
 const TOKEN_KEY = 'token';
 const REFRESH_TOKEN_KEY = 'refresh_token';
 const USER_KEY = 'user';
+const memoryStore = new Map();
+
+const storageGet = (key) => {
+  try {
+    if (typeof window !== 'undefined' && window.localStorage) {
+      return window.localStorage.getItem(key);
+    }
+  } catch (_) {
+    // Streamlit embedded frames may block localStorage.
+  }
+  return memoryStore.has(key) ? memoryStore.get(key) : null;
+};
+
+const storageSet = (key, value) => {
+  try {
+    if (typeof window !== 'undefined' && window.localStorage) {
+      window.localStorage.setItem(key, value);
+      return;
+    }
+  } catch (_) {
+    // fallback to in-memory storage
+  }
+  memoryStore.set(key, value);
+};
+
+const storageRemove = (key) => {
+  try {
+    if (typeof window !== 'undefined' && window.localStorage) {
+      window.localStorage.removeItem(key);
+    }
+  } catch (_) {
+    // fallback to in-memory storage
+  }
+  memoryStore.delete(key);
+};
 
 const getStoredUser = () => {
   try {
-    const raw = localStorage.getItem(USER_KEY);
+    const raw = storageGet(USER_KEY);
     return raw ? JSON.parse(raw) : null;
   } catch (_) {
     return null;
@@ -32,27 +67,27 @@ const login = async (username, password) => {
 
   const payload = response.data || {};
   if (payload.access_token) {
-    localStorage.setItem(TOKEN_KEY, payload.access_token);
+    storageSet(TOKEN_KEY, payload.access_token);
   }
   if (payload.refresh_token) {
-    localStorage.setItem(REFRESH_TOKEN_KEY, payload.refresh_token);
+    storageSet(REFRESH_TOKEN_KEY, payload.refresh_token);
   }
   if (payload.user) {
-    localStorage.setItem(USER_KEY, JSON.stringify(payload.user));
+    storageSet(USER_KEY, JSON.stringify(payload.user));
   }
 
   return payload.user || null;
 };
 
 const getUser = async () => {
-  const token = localStorage.getItem(TOKEN_KEY);
+  const token = storageGet(TOKEN_KEY);
   if (!token) return null;
 
   try {
     const response = await axios.get(`${API_URL}/me`, {
       headers: { Authorization: `Bearer ${token}` }
     });
-    localStorage.setItem(USER_KEY, JSON.stringify(response.data));
+    storageSet(USER_KEY, JSON.stringify(response.data));
     return response.data;
   } catch (error) {
     if (isAuthError(error)) {
@@ -65,7 +100,7 @@ const getUser = async () => {
         const response = await axios.get(`${API_URL}/me`, {
           headers: { Authorization: `Bearer ${refreshed}` }
         });
-        localStorage.setItem(USER_KEY, JSON.stringify(response.data));
+        storageSet(USER_KEY, JSON.stringify(response.data));
         return response.data;
       } catch (_) {
         logout();
@@ -78,7 +113,7 @@ const getUser = async () => {
 };
 
 const refreshAccessToken = async () => {
-  const refreshToken = localStorage.getItem(REFRESH_TOKEN_KEY);
+  const refreshToken = storageGet(REFRESH_TOKEN_KEY);
   if (!refreshToken) return null;
 
   try {
@@ -89,7 +124,7 @@ const refreshAccessToken = async () => {
     );
     const newToken = response?.data?.access_token;
     if (newToken) {
-      localStorage.setItem(TOKEN_KEY, newToken);
+      storageSet(TOKEN_KEY, newToken);
       return newToken;
     }
   } catch (_) {
@@ -99,17 +134,17 @@ const refreshAccessToken = async () => {
 };
 
 const logout = () => {
-  localStorage.removeItem(TOKEN_KEY);
-  localStorage.removeItem(REFRESH_TOKEN_KEY);
-  localStorage.removeItem(USER_KEY);
+  storageRemove(TOKEN_KEY);
+  storageRemove(REFRESH_TOKEN_KEY);
+  storageRemove(USER_KEY);
 };
 
 const getToken = () => {
-  return localStorage.getItem(TOKEN_KEY);
+  return storageGet(TOKEN_KEY);
 };
 
 const getRefreshToken = () => {
-  return localStorage.getItem(REFRESH_TOKEN_KEY);
+  return storageGet(REFRESH_TOKEN_KEY);
 };
 
 // Wrap in object and export as default

@@ -9,9 +9,15 @@ export const AuthProvider = ({ children }) => {
 
   useEffect(() => {
     const bootstrapUser = async () => {
-      const currentUser = await authService.getUser();
-      setUser(currentUser);
-      setLoading(false);
+      try {
+        const currentUser = await authService.getUser();
+        setUser(currentUser);
+      } catch (_) {
+        // Fail open to login page instead of leaving the app in a blank loading state.
+        setUser(null);
+      } finally {
+        setLoading(false);
+      }
     };
     bootstrapUser();
   }, []);
