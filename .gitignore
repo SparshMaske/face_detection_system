@@ -62,7 +62,6 @@ backend/reports/*
 *.log
 
 *.pkg
-frontend-stable/
 venv/
 __pycache__/
 *.pyc

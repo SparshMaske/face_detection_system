@@ -101,15 +101,28 @@ def _ensure_local_build() -> None:
         )
 
     st.info("Frontend build not found. Building frontend bundle...")
-    install = subprocess.run(
+    install_cmds = [
         [npm_bin, "ci", "--no-audit", "--no-fund"],
-        cwd=str(FRONTEND_DIR),
-        capture_output=True,
-        text=True,
-    )
-    if install.returncode != 0:
-        tail = "\n".join((install.stdout + "\n" + install.stderr).splitlines()[-40:])
-        raise RuntimeError(f"npm ci failed:\n{tail}")
+        [npm_bin, "install", "--no-audit", "--no-fund"],
+        [npm_bin, "install", "--no-audit", "--no-fund", "--legacy-peer-deps"],
+    ]
+    install_ok = False
+    install_logs = []
+    for cmd in install_cmds:
+        step = subprocess.run(
+            cmd,
+            cwd=str(FRONTEND_DIR),
+            capture_output=True,
+            text=True,
+        )
+        if step.returncode == 0:
+            install_ok = True
+            break
+        tail = "\n".join((step.stdout + "\n" + step.stderr).splitlines()[-30:])
+        install_logs.append(f"{' '.join(cmd)} failed:\n{tail}")
+
+    if not install_ok:
+        raise RuntimeError("Frontend dependency install failed:\n\n" + "\n\n".join(install_logs))
 
     build = subprocess.run(
         [npm_bin, "run", "build"],

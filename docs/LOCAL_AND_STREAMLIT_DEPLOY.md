@@ -36,6 +36,7 @@ Streamlit serves your React build from this repo on the same Streamlit URL.
 - App file: `streamlit_app.py`
 - Python dependencies file: `requirements.txt`
 - System packages file: `packages.txt` (installs Node/NPM for first-time frontend build)
+- Recommended: commit `frontend-stable/build/` so Streamlit skips runtime npm install/build.
 
 Backend URL configuration (optional but recommended):
 - Streamlit defaults to `/api` so the app opens directly without pre-errors.
