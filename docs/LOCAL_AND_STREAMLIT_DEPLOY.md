@@ -37,7 +37,10 @@ Streamlit is used as a shareable host page and embeds your exact React UI.
 - Python dependencies file: `requirements.txt`
 
 Set secret/env:
-- `STREAMLIT_EMBED_URL=https://your-public-frontend-url`
+- In Streamlit Cloud: **App Settings -> Secrets**
+  - `STREAMLIT_EMBED_URL="https://your-public-frontend-url"`
+- Or set env var:
+  - `STREAMLIT_EMBED_URL=https://your-public-frontend-url`
 
 Then Streamlit link becomes shareable:
 - `https://<your-app>.streamlit.app`
@@ -49,12 +52,13 @@ Optional override per link:
 
 ```bash
 pip install -r streamlit-requirements.txt
+export STREAMLIT_EMBED_URL="http://localhost:3000"
 streamlit run streamlit_app.py
 ```
 
 Open:
-- `http://localhost:8501` (defaults to `http://localhost:3000`)
-- Optional override: `http://localhost:8501/?app=http://localhost:3000`
+- `http://localhost:8501`
+- Optional override in URL: `http://localhost:8501/?app=http://localhost:3000`
 
 ## Notes
 - This preserves the same UI/UX because Streamlit embeds the same React app.

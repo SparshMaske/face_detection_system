@@ -34,31 +34,53 @@ def _query_param(name: str) -> str:
     return str(value)
 
 
+def _secret_value(name: str) -> str:
+    try:
+        value = st.secrets.get(name, "")
+    except Exception:
+        return ""
+    if isinstance(value, list):
+        return str(value[0]).strip() if value else ""
+    return str(value).strip()
+
+
 query_app = _query_param("app").strip()
+secret_app = _secret_value("STREAMLIT_EMBED_URL")
+if not secret_app:
+    secret_app = _secret_value("FRONTEND_URL")
+if not secret_app:
+    secret_app = _secret_value("APP_URL")
 env_app = os.getenv("STREAMLIT_EMBED_URL", "").strip()
-default_local_app = "http://localhost:3000"
-embed_url = query_app or env_app or default_local_app
+if not env_app:
+    env_app = os.getenv("FRONTEND_URL", "").strip()
+if not env_app:
+    env_app = os.getenv("APP_URL", "").strip()
+embed_url = query_app or secret_app or env_app
 
 if query_app:
     st.info(f"Using app URL from query param: {query_app}")
+elif secret_app:
+    st.info("Using app URL from Streamlit secrets.")
 elif env_app:
-    st.info(f"Using app URL from STREAMLIT_EMBED_URL: {env_app}")
-else:
-    st.warning(
-        "No app URL provided. Defaulting to `http://localhost:3000`. "
-        "Use `?app=<url>` or set `STREAMLIT_EMBED_URL` to override."
-    )
+    st.info("Using app URL from environment variable.")
 
-if not (query_app or env_app):
+if not embed_url:
+    st.error("Missing hosted frontend URL for Streamlit Cloud deployment.")
     st.markdown(
         """
-        For a shareable Streamlit Cloud deployment, set your hosted frontend URL using one of these:
-        - Streamlit Cloud secret/env: `STREAMLIT_EMBED_URL=https://your-frontend-url`
+        Set your frontend URL using one of these:
+        - Streamlit Cloud Secrets: `STREAMLIT_EMBED_URL="https://your-frontend-url"`
+        - Streamlit Cloud Secrets: `FRONTEND_URL="https://your-frontend-url"`
+        - Streamlit Cloud env var: `STREAMLIT_EMBED_URL=https://your-frontend-url`
         - Query param: `?app=https://your-frontend-url`
+
+        Local development example:
+        `STREAMLIT_EMBED_URL=http://localhost:3000 streamlit run streamlit_app.py`
 
         Example:
         `https://your-streamlit-app.streamlit.app/?app=https://your-frontend-url`
         """
     )
+    st.stop()
 
 components.iframe(embed_url, height=1200, scrolling=True)
