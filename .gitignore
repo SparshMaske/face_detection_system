@@ -60,3 +60,10 @@ backend/static/uploads/*
 backend/reports/*
 !backend/reports/.gitkeep
 *.log
+
+*.pkg
+frontend-stable/
+venv/
+__pycache__/
+*.pyc
+.env
