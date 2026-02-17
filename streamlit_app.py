@@ -167,6 +167,21 @@ def _render_local_frontend(api_base_url: str) -> None:
   </head>
   <body>
     <div id="root"></div>
+    <div id="streamlit-runtime-error" style="display:none;white-space:pre-wrap;background:#2a1114;color:#fecaca;padding:12px;margin:8px;border-radius:8px;font-family:monospace;font-size:12px;"></div>
+    <script>
+      window.addEventListener('error', function (event) {{
+        var box = document.getElementById('streamlit-runtime-error');
+        if (!box) return;
+        box.style.display = 'block';
+        box.textContent = 'Frontend runtime error: ' + (event.message || 'Unknown error');
+      }});
+      window.addEventListener('unhandledrejection', function (event) {{
+        var box = document.getElementById('streamlit-runtime-error');
+        if (!box) return;
+        box.style.display = 'block';
+        box.textContent = 'Frontend unhandled promise rejection: ' + String(event.reason || 'Unknown reason');
+      }});
+    </script>
     <script>{js_bundle}</script>
   </body>
 </html>

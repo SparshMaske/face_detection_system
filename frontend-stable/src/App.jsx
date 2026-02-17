@@ -1,4 +1,11 @@
-import { BrowserRouter as Router, Routes, Route, Navigate, Outlet } from 'react-router-dom';
+import {
+  BrowserRouter,
+  HashRouter,
+  Routes,
+  Route,
+  Navigate,
+  Outlet,
+} from 'react-router-dom';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { ThemeProvider } from './context/ThemeContext';
 import Navbar from './components/Navbar';
@@ -23,6 +30,11 @@ const ProtectedRoute = () => {
 };
 
 function App() {
+  const isEmbeddedProtocol =
+    typeof window !== 'undefined' &&
+    ['about:', 'data:', 'blob:'].includes(window.location.protocol);
+  const Router = isEmbeddedProtocol ? HashRouter : BrowserRouter;
+
   return (
     <ThemeProvider>
       <AuthProvider>
