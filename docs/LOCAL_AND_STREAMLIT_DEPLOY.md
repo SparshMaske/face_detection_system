@@ -37,16 +37,17 @@ Streamlit serves your React build from this repo on the same Streamlit URL.
 - Python dependencies file: `requirements.txt`
 - System packages file: `packages.txt` (installs Node/NPM for first-time frontend build)
 
-Set secret/env:
-- In Streamlit Cloud: **App Settings -> Secrets**
-  - `BACKEND_API_URL="https://your-backend-domain"`
-- Or set env var:
-  - `BACKEND_API_URL=https://your-backend-domain`
+Backend URL configuration (optional but recommended):
+- Streamlit defaults to `/api` so the app opens directly without pre-errors.
+- If your backend is on another domain, set one of:
+  - Streamlit Secrets: `BACKEND_API_URL="https://your-backend-domain"`
+  - Env var: `BACKEND_API_URL=https://your-backend-domain`
+  - Query override: `?api=https://your-backend-domain`
 
 Then Streamlit link becomes shareable:
 - `https://<your-app>.streamlit.app`
 
-Optional override per link:
+Optional backend override per link:
 - `https://<your-app>.streamlit.app/?api=https://your-backend-domain`
 
 ### Local Streamlit run (optional)
@@ -54,13 +55,12 @@ Optional override per link:
 ```bash
 pip install -r streamlit-requirements.txt
 cd frontend-stable && npm run build && cd ..
-export BACKEND_API_URL="http://127.0.0.1:5000"
 streamlit run streamlit_app.py
 ```
 
 Open:
 - `http://localhost:8501`
-- Optional override in URL: `http://localhost:8501/?api=http://127.0.0.1:5000`
+- Optional backend override: `http://localhost:8501/?api=http://127.0.0.1:5000`
 
 ## Notes
 - This preserves the same UI/UX by loading the same built React app inside Streamlit.

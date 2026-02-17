@@ -113,7 +113,7 @@ Use this if you want a Streamlit share link while keeping the same React UI/UX:
 1. Build frontend in this repo (`frontend-stable/build`).
 2. Deploy backend publicly.
 3. Deploy this repo on Streamlit with app file `streamlit_app.py`.
-4. Set `BACKEND_API_URL` in Streamlit Secrets.
+4. Optional: set `BACKEND_API_URL` in Streamlit Secrets if backend is not on `/api`.
 
 Detailed steps:
 - `docs/LOCAL_AND_STREAMLIT_DEPLOY.md`

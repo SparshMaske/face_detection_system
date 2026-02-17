@@ -73,8 +73,14 @@ def _is_http_url(url: str) -> bool:
 
 
 def _normalize_api_url(url: str) -> str:
-    clean = url.rstrip("/")
-    return clean if clean.endswith("/api") else f"{clean}/api"
+    clean = url.strip().rstrip("/")
+    if not clean:
+        return "/api"
+    if clean.startswith("/"):
+        return clean if clean.endswith("/api") else f"{clean}/api"
+    if _is_http_url(clean):
+        return clean if clean.endswith("/api") else f"{clean}/api"
+    return "/api"
 
 
 def _read_build_asset(relative_path: str) -> str:
@@ -168,40 +174,10 @@ api_from_env = _env_value(
     "API_BASE_URL",
     "STREAMLIT_API_URL",
 )
-api_url = api_from_query or api_from_secret or api_from_env
-
-if not api_url:
-    st.error("Missing backend URL.")
-    manual_url = st.text_input(
-        "Backend URL (without /api)",
-        value="",
-        placeholder="https://your-backend-domain",
-    ).strip()
-    if st.button("Open App"):
-        if _is_http_url(manual_url):
-            st.query_params["api"] = manual_url
-            st.rerun()
-        else:
-            st.error("Please enter a valid backend URL (http/https).")
-
-    st.markdown(
-        """
-        Configure one of these and redeploy/reboot:
-        - Streamlit Cloud Secrets: `BACKEND_API_URL="https://your-backend-domain"`
-        - Streamlit Cloud env var: `BACKEND_API_URL=https://your-backend-domain`
-        - Query param: `?api=https://your-backend-domain`
-        """
-    )
-    st.stop()
-
-if not _is_http_url(api_url):
-    st.error("Invalid backend URL. Use a full URL such as `https://your-backend-domain`.")
-    st.stop()
+default_api = _env_value("DEFAULT_BACKEND_API_URL", "DEFAULT_API_URL") or "/api"
+api_url = api_from_query or api_from_secret or api_from_env or default_api
 
 api_base_url = _normalize_api_url(api_url)
-
-if st.query_params.get("debug", "") == "1":
-    st.info(f"Using backend API: {api_base_url}")
 
 try:
     _render_local_frontend(api_base_url)
