@@ -1,0 +1,25 @@
+FROM python:3.11-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+ENV PIP_NO_CACHE_DIR=1
+
+WORKDIR /app/backend
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    libpq-dev \
+    libgl1 \
+    libglib2.0-0 \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY backend/requirements.txt /app/backend/requirements.txt
+RUN pip install -r /app/backend/requirements.txt
+
+COPY backend /app/backend
+
+RUN mkdir -p /app/backend/static/uploads/staff /app/backend/static/uploads/visitors /app/backend/reports
+
+EXPOSE 5000
+
+CMD ["gunicorn", "-k", "gthread", "--threads", "8", "--workers", "1", "--bind", "0.0.0.0:5000", "app:app"]
