@@ -110,9 +110,10 @@ docker compose up --build -d
 
 Use this if you want a Streamlit share link while keeping the same React UI/UX:
 
-1. Deploy your frontend/backend publicly.
-2. Deploy this repo on Streamlit with app file `streamlit_app.py`.
-3. Set `STREAMLIT_EMBED_URL` to your public frontend URL.
+1. Build frontend in this repo (`frontend-stable/build`).
+2. Deploy backend publicly.
+3. Deploy this repo on Streamlit with app file `streamlit_app.py`.
+4. Set `BACKEND_API_URL` in Streamlit Secrets.
 
 Detailed steps:
 - `docs/LOCAL_AND_STREAMLIT_DEPLOY.md`

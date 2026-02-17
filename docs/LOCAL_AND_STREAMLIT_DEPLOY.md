@@ -26,40 +26,42 @@ docker compose down
 
 ## 2) Streamlit deployment (shareable link, same UI/UX)
 
-Streamlit is used as a shareable host page and embeds your exact React UI.
+Streamlit serves your React build from this repo on the same Streamlit URL.
 
-### Step A: Host your web app frontend publicly
-- Deploy frontend URL publicly (for example on Render/Vercel/Netlify), pointing API to your hosted backend.
-- Confirm the frontend URL works directly first.
+### Step A: Host backend publicly
+- Deploy backend API publicly (Render/Railway/VM/etc.) so mobile users can access it over HTTPS.
+- Confirm `https://<backend-domain>/api/health` (or any API endpoint) works.
 
 ### Step B: Deploy this repo on Streamlit Community Cloud
 - App file: `streamlit_app.py`
 - Python dependencies file: `requirements.txt`
+- System packages file: `packages.txt` (installs Node/NPM for first-time frontend build)
 
 Set secret/env:
 - In Streamlit Cloud: **App Settings -> Secrets**
-  - `STREAMLIT_EMBED_URL="https://your-public-frontend-url"`
+  - `BACKEND_API_URL="https://your-backend-domain"`
 - Or set env var:
-  - `STREAMLIT_EMBED_URL=https://your-public-frontend-url`
+  - `BACKEND_API_URL=https://your-backend-domain`
 
 Then Streamlit link becomes shareable:
 - `https://<your-app>.streamlit.app`
 
 Optional override per link:
-- `https://<your-app>.streamlit.app/?app=https://your-public-frontend-url`
+- `https://<your-app>.streamlit.app/?api=https://your-backend-domain`
 
 ### Local Streamlit run (optional)
 
 ```bash
 pip install -r streamlit-requirements.txt
-export STREAMLIT_EMBED_URL="http://localhost:3000"
+cd frontend-stable && npm run build && cd ..
+export BACKEND_API_URL="http://127.0.0.1:5000"
 streamlit run streamlit_app.py
 ```
 
 Open:
 - `http://localhost:8501`
-- Optional override in URL: `http://localhost:8501/?app=http://localhost:3000`
+- Optional override in URL: `http://localhost:8501/?api=http://127.0.0.1:5000`
 
 ## Notes
-- This preserves the same UI/UX because Streamlit embeds the same React app.
-- Browser camera/RTSP behavior depends on your hosted frontend/backend deployment and HTTPS permissions.
+- This preserves the same UI/UX by loading the same built React app inside Streamlit.
+- For phone users, backend must be HTTPS and CORS must allow your Streamlit domain.

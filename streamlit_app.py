@@ -1,4 +1,8 @@
+import json
 import os
+import shutil
+import subprocess
+from pathlib import Path
 from urllib.parse import urlparse
 
 import streamlit as st
@@ -28,29 +32,39 @@ st.markdown(
 )
 
 
+ROOT_DIR = Path(__file__).resolve().parent
+BUILD_DIR = ROOT_DIR / "frontend-stable" / "build"
+FRONTEND_DIR = ROOT_DIR / "frontend-stable"
+
+
 def _query_param(name: str) -> str:
     value = st.query_params.get(name, "")
-    if isinstance(value, list):
-        return value[0] if value else ""
-    return str(value)
-
-
-def _secret_value(name: str) -> str:
-    try:
-        value = st.secrets.get(name, "")
-    except Exception:
-        return ""
     if isinstance(value, list):
         return str(value[0]).strip() if value else ""
     return str(value).strip()
 
 
-def _is_streamlit_cloud() -> bool:
-    truthy = {"1", "true", "yes", "on"}
-    return (
-        os.getenv("STREAMLIT_SHARING_MODE", "").strip().lower() in truthy
-        or os.getenv("IS_STREAMLIT_CLOUD", "").strip().lower() in truthy
-    )
+def _secret_value(*names: str) -> str:
+    for name in names:
+        try:
+            value = st.secrets.get(name, "")
+        except Exception:
+            value = ""
+        if isinstance(value, list):
+            value = str(value[0]).strip() if value else ""
+        else:
+            value = str(value).strip()
+        if value:
+            return value
+    return ""
+
+
+def _env_value(*names: str) -> str:
+    for name in names:
+        value = os.getenv(name, "").strip()
+        if value:
+            return value
+    return ""
 
 
 def _is_http_url(url: str) -> bool:
@@ -58,62 +72,139 @@ def _is_http_url(url: str) -> bool:
     return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
 
 
-query_app = _query_param("app").strip()
-secret_app = _secret_value("STREAMLIT_EMBED_URL")
-if not secret_app:
-    secret_app = _secret_value("FRONTEND_URL")
-if not secret_app:
-    secret_app = _secret_value("APP_URL")
-env_app = os.getenv("STREAMLIT_EMBED_URL", "").strip()
-if not env_app:
-    env_app = os.getenv("FRONTEND_URL", "").strip()
-if not env_app:
-    env_app = os.getenv("APP_URL", "").strip()
-embed_url = query_app or secret_app or env_app
-is_cloud = _is_streamlit_cloud()
+def _normalize_api_url(url: str) -> str:
+    clean = url.rstrip("/")
+    return clean if clean.endswith("/api") else f"{clean}/api"
 
-if query_app:
-    st.info(f"Using app URL from query param: {query_app}")
-elif secret_app:
-    st.info("Using app URL from Streamlit secrets.")
-elif env_app:
-    st.info("Using app URL from environment variable.")
 
-if not embed_url:
-    st.error("Missing hosted frontend URL for Streamlit Cloud deployment.")
+def _read_build_asset(relative_path: str) -> str:
+    file_path = BUILD_DIR / relative_path.lstrip("/")
+    return file_path.read_text(encoding="utf-8", errors="ignore")
+
+
+def _ensure_local_build() -> None:
+    manifest_path = BUILD_DIR / "asset-manifest.json"
+    if manifest_path.exists():
+        return
+
+    npm_bin = shutil.which("npm")
+    if not npm_bin:
+        raise FileNotFoundError(
+            "Frontend build missing and npm is not available. "
+            "Commit frontend-stable/build or install npm in deployment."
+        )
+
+    st.info("Frontend build not found. Building frontend bundle...")
+    install = subprocess.run(
+        [npm_bin, "ci", "--no-audit", "--no-fund"],
+        cwd=str(FRONTEND_DIR),
+        capture_output=True,
+        text=True,
+    )
+    if install.returncode != 0:
+        tail = "\n".join((install.stdout + "\n" + install.stderr).splitlines()[-40:])
+        raise RuntimeError(f"npm ci failed:\n{tail}")
+
+    build = subprocess.run(
+        [npm_bin, "run", "build"],
+        cwd=str(FRONTEND_DIR),
+        capture_output=True,
+        text=True,
+    )
+    if build.returncode != 0:
+        tail = "\n".join((build.stdout + "\n" + build.stderr).splitlines()[-60:])
+        raise RuntimeError(f"npm run build failed:\n{tail}")
+
+    if not manifest_path.exists():
+        raise FileNotFoundError("Build completed but asset-manifest.json is still missing.")
+
+
+def _render_local_frontend(api_base_url: str) -> None:
+    _ensure_local_build()
+    manifest_path = BUILD_DIR / "asset-manifest.json"
+    if not manifest_path.exists():
+        raise FileNotFoundError("frontend-stable/build/asset-manifest.json not found")
+
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    css_rel = manifest.get("files", {}).get("main.css", "")
+    js_rel = manifest.get("files", {}).get("main.js", "")
+    if not css_rel or not js_rel:
+        raise RuntimeError("Build manifest missing main.css or main.js")
+
+    css_bundle = _read_build_asset(css_rel)
+    js_bundle = _read_build_asset(js_rel)
+
+    # Keep build immutable; patch API endpoint at runtime for Streamlit deployment.
+    js_bundle = js_bundle.replace("http://127.0.0.1:5000/api", api_base_url)
+    js_bundle = js_bundle.replace("http://localhost:5000/api", api_base_url)
+
+    html = f"""<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Visitor Monitoring System</title>
+    <style>{css_bundle}</style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script>{js_bundle}</script>
+  </body>
+</html>
+"""
+    components.html(html, height=1600, scrolling=True)
+
+
+api_from_query = _query_param("api")
+api_from_secret = _secret_value(
+    "BACKEND_API_URL",
+    "STREAMLIT_BACKEND_API_URL",
+    "API_BASE_URL",
+    "STREAMLIT_API_URL",
+)
+api_from_env = _env_value(
+    "BACKEND_API_URL",
+    "STREAMLIT_BACKEND_API_URL",
+    "API_BASE_URL",
+    "STREAMLIT_API_URL",
+)
+api_url = api_from_query or api_from_secret or api_from_env
+
+if not api_url:
+    st.error("Missing backend URL.")
     manual_url = st.text_input(
-        "Frontend URL",
+        "Backend URL (without /api)",
         value="",
-        placeholder="https://your-frontend-url",
+        placeholder="https://your-backend-domain",
     ).strip()
     if st.button("Open App"):
         if _is_http_url(manual_url):
-            st.query_params["app"] = manual_url
+            st.query_params["api"] = manual_url
             st.rerun()
         else:
-            st.error("Please enter a valid URL (http/https).")
+            st.error("Please enter a valid backend URL (http/https).")
+
     st.markdown(
         """
-        Set your frontend URL using one of these:
-        - Streamlit Cloud Secrets: `STREAMLIT_EMBED_URL="https://your-frontend-url"`
-        - Streamlit Cloud Secrets: `FRONTEND_URL="https://your-frontend-url"`
-        - Streamlit Cloud env var: `STREAMLIT_EMBED_URL=https://your-frontend-url`
-        - Query param: `?app=https://your-frontend-url`
-
-        Local development example:
-        `STREAMLIT_EMBED_URL=http://localhost:3000 streamlit run streamlit_app.py`
-
-        Example:
-        `https://your-streamlit-app.streamlit.app/?app=https://your-frontend-url`
+        Configure one of these and redeploy/reboot:
+        - Streamlit Cloud Secrets: `BACKEND_API_URL="https://your-backend-domain"`
+        - Streamlit Cloud env var: `BACKEND_API_URL=https://your-backend-domain`
+        - Query param: `?api=https://your-backend-domain`
         """
     )
     st.stop()
 
-if not _is_http_url(embed_url):
-    st.error("Invalid frontend URL. Use a full URL such as `https://your-frontend-url`.")
+if not _is_http_url(api_url):
+    st.error("Invalid backend URL. Use a full URL such as `https://your-backend-domain`.")
     st.stop()
 
-if is_cloud and embed_url.startswith("http://"):
-    st.warning("Streamlit Cloud is HTTPS. Use an `https://` frontend URL to avoid browser blocking.")
+api_base_url = _normalize_api_url(api_url)
 
-components.iframe(embed_url, height=1200, scrolling=True)
+if st.query_params.get("debug", "") == "1":
+    st.info(f"Using backend API: {api_base_url}")
+
+try:
+    _render_local_frontend(api_base_url)
+except Exception as exc:
+    st.error("Failed to render local frontend build in Streamlit.")
+    st.code(str(exc))
