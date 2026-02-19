@@ -6,6 +6,7 @@ const TOKEN_KEY = 'token';
 const REFRESH_TOKEN_KEY = 'refresh_token';
 const USER_KEY = 'user';
 const memoryStore = new Map();
+const NGROK_HEADER = { 'ngrok-skip-browser-warning': 'true' };
 
 const storageGet = (key) => {
   try {
@@ -60,10 +61,16 @@ const isAuthError = (error) => {
 };
 
 const login = async (username, password) => {
-  const response = await axios.post(`${API_URL}/login`, {
-    username,
-    password,
-  });
+  const response = await axios.post(
+    `${API_URL}/login`,
+    {
+      username,
+      password,
+    },
+    {
+      headers: NGROK_HEADER,
+    }
+  );
 
   const payload = response.data || {};
   if (payload.access_token) {
@@ -85,7 +92,7 @@ const getUser = async () => {
 
   try {
     const response = await axios.get(`${API_URL}/me`, {
-      headers: { Authorization: `Bearer ${token}` }
+      headers: { ...NGROK_HEADER, Authorization: `Bearer ${token}` }
     });
     storageSet(USER_KEY, JSON.stringify(response.data));
     return response.data;
@@ -98,7 +105,7 @@ const getUser = async () => {
           return null;
         }
         const response = await axios.get(`${API_URL}/me`, {
-          headers: { Authorization: `Bearer ${refreshed}` }
+          headers: { ...NGROK_HEADER, Authorization: `Bearer ${refreshed}` }
         });
         storageSet(USER_KEY, JSON.stringify(response.data));
         return response.data;
@@ -120,7 +127,7 @@ const refreshAccessToken = async () => {
     const response = await axios.post(
       `${API_URL}/refresh`,
       {},
-      { headers: { Authorization: `Bearer ${refreshToken}` } }
+      { headers: { ...NGROK_HEADER, Authorization: `Bearer ${refreshToken}` } }
     );
     const newToken = response?.data?.access_token;
     if (newToken) {

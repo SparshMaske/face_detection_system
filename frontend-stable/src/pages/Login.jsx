@@ -16,7 +16,12 @@ export default function Login() {
       await login(username, password);
       navigate('/event-scheduler');
     } catch (err) {
-      setError('Invalid username or password');
+      const status = err?.response?.status;
+      if (status === 401) {
+        setError('Invalid username or password');
+        return;
+      }
+      setError('Unable to reach backend from this URL. Check ngrok tunnel/proxy and try again.');
     }
   };
 
