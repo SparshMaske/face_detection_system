@@ -192,7 +192,7 @@ export default function EventScheduler() {
             />
           </div>
 
-          <div className="flex gap-4">
+          <div className="event-grid-two">
             <div className="w-full">
               <label className="block text-sm font-medium mb-1">Start Time</label>
               <input
@@ -274,7 +274,7 @@ export default function EventScheduler() {
 
           {error && <div className="text-red-600 text-sm">{error}</div>}
 
-          <div className="flex gap-2">
+          <div className="event-actions">
             <button type="submit" className="btn btn-primary" disabled={saving}>
               {saving ? 'Scheduling...' : 'Save Event'}
             </button>

@@ -5,7 +5,9 @@ import {
   Route,
   Navigate,
   Outlet,
+  useLocation,
 } from 'react-router-dom';
+import { useEffect, useState } from 'react';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { ThemeProvider } from './context/ThemeContext';
 import Navbar from './components/Navbar';
@@ -65,11 +67,22 @@ function App() {
 
 // Main Layout with Navbar and Sidebar
 function Layout() {
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  const location = useLocation();
+
+  useEffect(() => {
+    setMobileNavOpen(false);
+  }, [location.pathname]);
+
   return (
     <div className="app-shell flex h-screen bg-gray-50">
-      <Sidebar />
+      <Sidebar
+        mobileOpen={mobileNavOpen}
+        onClose={() => setMobileNavOpen(false)}
+        onNavigate={() => setMobileNavOpen(false)}
+      />
       <div className="app-content flex-1 flex flex-col overflow-hidden">
-        <Navbar />
+        <Navbar onToggleMenu={() => setMobileNavOpen((prev) => !prev)} />
         <main className="app-main flex-1 overflow-x-hidden overflow-y-auto bg-gray-50 p-6">
           <Outlet />
         </main>

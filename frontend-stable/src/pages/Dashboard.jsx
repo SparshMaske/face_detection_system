@@ -57,30 +57,32 @@ export default function Dashboard() {
       </div>
 
       <Card title="Recent Activity">
-        <table className="table">
-          <thead>
-            <tr>
-              <th>Visitor ID</th>
-              <th>Entry Time</th>
-              <th>Exit Time</th>
-              <th>Status</th>
-            </tr>
-          </thead>
-          <tbody>
-            {activity.map((act) => (
-              <tr key={act.id}>
-                <td>{act.visitor_id}</td>
-                <td>{new Date(act.entry_time).toLocaleString()}</td>
-                <td>{act.exit_time ? new Date(act.exit_time).toLocaleString() : '-'}</td>
-                <td>
-                  <span className={`badge ${act.is_active ? 'badge-green' : 'badge-red'}`}>
-                    {act.is_active ? 'Active' : 'Left'}
-                  </span>
-                </td>
+        <div className="table-wrap">
+          <table className="table">
+            <thead>
+              <tr>
+                <th>Visitor ID</th>
+                <th>Entry Time</th>
+                <th>Exit Time</th>
+                <th>Status</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {activity.map((act) => (
+                <tr key={act.id}>
+                  <td>{act.visitor_id}</td>
+                  <td>{new Date(act.entry_time).toLocaleString()}</td>
+                  <td>{act.exit_time ? new Date(act.exit_time).toLocaleString() : '-'}</td>
+                  <td>
+                    <span className={`badge ${act.is_active ? 'badge-green' : 'badge-red'}`}>
+                      {act.is_active ? 'Active' : 'Left'}
+                    </span>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       </Card>
     </div>
   );

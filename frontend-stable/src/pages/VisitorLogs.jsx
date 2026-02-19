@@ -30,33 +30,35 @@ export default function VisitorLogs() {
       {error && <div className="text-red-600">{error}</div>}
       
       <Card>
-        <table className="table">
-          <thead>
-            <tr>
-              <th>ID</th>
-              <th>First Seen</th>
-              <th>Last Seen</th>
-              <th>Duration</th>
-              <th>Visits</th>
-              <th>Status</th>
-            </tr>
-          </thead>
-          <tbody>
-            {visitors.map(v => (
-              <tr key={v.id}>
-                <td>{v.visitor_id}</td>
-                <td>{new Date(v.first_seen).toLocaleDateString()}</td>
-                <td>{new Date(v.last_seen).toLocaleString()}</td>
-                <td>{v.event_duration_formatted || '-'}</td>
-                <td>{v.visit_count}</td>
-                <td>
-                  <span className="badge badge-green">Logged</span>
-                </td>
+        <div className="table-wrap">
+          <table className="table">
+            <thead>
+              <tr>
+                <th>ID</th>
+                <th>First Seen</th>
+                <th>Last Seen</th>
+                <th>Duration</th>
+                <th>Visits</th>
+                <th>Status</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
-        <div className="flex justify-between mt-4">
+            </thead>
+            <tbody>
+              {visitors.map(v => (
+                <tr key={v.id}>
+                  <td>{v.visitor_id}</td>
+                  <td>{new Date(v.first_seen).toLocaleDateString()}</td>
+                  <td>{new Date(v.last_seen).toLocaleString()}</td>
+                  <td>{v.event_duration_formatted || '-'}</td>
+                  <td>{v.visit_count}</td>
+                  <td>
+                    <span className="badge badge-green">Logged</span>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <div className="table-pagination flex justify-between mt-4">
           <button disabled={page === 1} onClick={() => fetchVisitors(page - 1)} className="btn btn-secondary">Previous</button>
           <span>Page {page}</span>
           <button onClick={() => fetchVisitors(page + 1)} className="btn btn-secondary">Next</button>
