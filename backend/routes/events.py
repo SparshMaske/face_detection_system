@@ -189,16 +189,16 @@ def _resolve_camera(camera_mode, rtsp_url=None, existing_camera_id=None):
         if not camera:
             camera = Camera(
                 camera_id='EVENT_DEFAULT',
-                name='Event Default Camera',
+                name='Event Device Camera',
                 location='Event Scheduler',
-                stream_url='0',
-                camera_type='webcam',
+                stream_url='browser://device',
+                camera_type='browser',
                 is_active=True,
             )
             db.session.add(camera)
         else:
-            camera.stream_url = '0'
-            camera.camera_type = 'webcam'
+            camera.stream_url = 'browser://device'
+            camera.camera_type = 'browser'
             camera.is_active = True
         db.session.commit()
         return camera, None

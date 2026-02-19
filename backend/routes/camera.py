@@ -1,10 +1,48 @@
 import cv2
 import datetime
+from threading import Lock
+
+import numpy as np
 from flask import request, jsonify, Response, stream_with_context, current_app
 from flask_jwt_extended import jwt_required
 from routes import camera_bp
 from models import db
 from models.camera import Camera
+
+_CLIENT_CLEANUP_TIMES = {}
+_CLIENT_CLEANUP_LOCK = Lock()
+
+
+def _apply_event_processing(frame, camera, fr_service, last_inactive_cleanup):
+    try:
+        from routes.events import get_event_state_snapshot
+        event_state = get_event_state_snapshot(sync=True)
+        event_active = bool(event_state.get('workflow_active'))
+        selected_camera_id = event_state.get('selected_camera_id')
+        if selected_camera_id and selected_camera_id != camera.camera_id:
+            event_active = False
+
+        if event_active:
+            frame = fr_service.process_frame_for_stream(
+                frame,
+                camera,
+                event_context=event_state,
+            )
+        else:
+            now_local = datetime.datetime.now()
+            if (now_local - last_inactive_cleanup).total_seconds() >= 2.0:
+                fr_service.finalize_active_sessions(
+                    now_local=now_local,
+                    event_start=event_state.get('start_time'),
+                    event_end=event_state.get('end_time'),
+                    camera_db_id=camera.id,
+                )
+                last_inactive_cleanup = now_local
+    except Exception as exc:
+        current_app.logger.warning("Stream frame annotation failed: %s", exc)
+
+    return frame, last_inactive_cleanup
+
 
 @camera_bp.route('/', methods=['GET'])
 @jwt_required()
@@ -36,6 +74,8 @@ def stream_feed(camera_id):
     cam = Camera.query.filter_by(camera_id=camera_id).first()
     if not cam:
         return jsonify({'error': 'Camera not found'}), 404
+    if (cam.camera_type or '').lower() == 'browser':
+        return jsonify({'error': 'Browser camera stream must use /api/camera/process-client-frame'}), 400
 
     def gen(camera):
         fr_service = None
@@ -62,32 +102,12 @@ def stream_feed(camera_id):
                     break
                 
                 if fr_service is not None:
-                    try:
-                        from routes.events import get_event_state_snapshot
-                        event_state = get_event_state_snapshot(sync=True)
-                        event_active = bool(event_state.get('workflow_active'))
-                        selected_camera_id = event_state.get('selected_camera_id')
-                        if selected_camera_id and selected_camera_id != cam.camera_id:
-                            event_active = False
-
-                        if event_active:
-                            frame = fr_service.process_frame_for_stream(
-                                frame,
-                                cam,
-                                event_context=event_state,
-                            )
-                        else:
-                            now_local = datetime.datetime.now()
-                            if (now_local - last_inactive_cleanup).total_seconds() >= 2.0:
-                                fr_service.finalize_active_sessions(
-                                    now_local=now_local,
-                                    event_start=event_state.get('start_time'),
-                                    event_end=event_state.get('end_time'),
-                                    camera_db_id=cam.id,
-                                )
-                                last_inactive_cleanup = now_local
-                    except Exception as exc:
-                        current_app.logger.warning("Stream frame annotation failed: %s", exc)
+                    frame, last_inactive_cleanup = _apply_event_processing(
+                        frame,
+                        cam,
+                        fr_service,
+                        last_inactive_cleanup,
+                    )
                 
                 ret, jpeg = cv2.imencode('.jpg', frame)
                 if not ret:
@@ -101,6 +121,65 @@ def stream_feed(camera_id):
     return Response(
         stream_with_context(gen(cam)),
         mimetype='multipart/x-mixed-replace; boundary=frame',
+        headers={
+            'Cache-Control': 'no-cache, no-store, must-revalidate',
+            'Pragma': 'no-cache',
+            'Expires': '0',
+        },
+    )
+
+
+@camera_bp.route('/process-client-frame', methods=['POST'])
+@jwt_required()
+def process_client_frame():
+    """Accept a browser-captured frame and return processed JPEG with overlays."""
+    camera_id = (request.form.get('camera_id') or request.args.get('camera_id') or 'EVENT_DEFAULT').strip()
+    cam = Camera.query.filter_by(camera_id=camera_id).first()
+    if cam is None and camera_id == 'EVENT_DEFAULT':
+        cam = Camera(
+            camera_id='EVENT_DEFAULT',
+            name='Event Device Camera',
+            location='Event Scheduler',
+            stream_url='browser://device',
+            camera_type='browser',
+            is_active=True,
+        )
+        db.session.add(cam)
+        db.session.commit()
+    if cam is None:
+        return jsonify({'error': 'Camera not found'}), 404
+
+    upload = request.files.get('frame')
+    frame_bytes = upload.read() if upload is not None else request.get_data(cache=False)
+    if not frame_bytes:
+        return jsonify({'error': 'frame is required'}), 400
+
+    np_buf = np.frombuffer(frame_bytes, dtype=np.uint8)
+    frame = cv2.imdecode(np_buf, cv2.IMREAD_COLOR)
+    if frame is None:
+        return jsonify({'error': 'Invalid image frame'}), 400
+
+    try:
+        from services.face_recognition import FaceRecognitionService
+        fr_service = FaceRecognitionService()
+    except Exception as exc:
+        current_app.logger.warning("Face model unavailable for client frame: %s", exc)
+        fr_service = None
+
+    if fr_service is not None:
+        with _CLIENT_CLEANUP_LOCK:
+            last_cleanup = _CLIENT_CLEANUP_TIMES.get(cam.camera_id, datetime.datetime.min)
+        frame, last_cleanup = _apply_event_processing(frame, cam, fr_service, last_cleanup)
+        with _CLIENT_CLEANUP_LOCK:
+            _CLIENT_CLEANUP_TIMES[cam.camera_id] = last_cleanup
+
+    ok, jpeg = cv2.imencode('.jpg', frame, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
+    if not ok:
+        return jsonify({'error': 'Failed to encode processed frame'}), 500
+
+    return Response(
+        jpeg.tobytes(),
+        mimetype='image/jpeg',
         headers={
             'Cache-Control': 'no-cache, no-store, must-revalidate',
             'Pragma': 'no-cache',

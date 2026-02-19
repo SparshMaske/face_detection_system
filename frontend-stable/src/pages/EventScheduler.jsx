@@ -225,7 +225,7 @@ export default function EventScheduler() {
                   checked={form.camera_mode === 'default'}
                   onChange={() => handleChange('camera_mode', 'default')}
                 />
-                <span>Default Device Camera</span>
+                <span>Default Device Camera (Current Device)</span>
               </label>
               <label className="flex items-center gap-2">
                 <input
