@@ -1,6 +1,6 @@
 import os
 from datetime import timedelta
-from flask import Flask, jsonify
+from flask import Flask, jsonify, request
 from flask_cors import CORS
 from flask_jwt_extended import JWTManager
 from flask_migrate import Migrate
@@ -101,9 +101,14 @@ def create_app(config_class=Config):
     limiter = Limiter(
         app=app,
         key_func=get_remote_address,
-        default_limits=["200 per day", "50 per hour"],
+        default_limits=["200000 per day", "20000 per hour"],
         storage_uri="memory://"
     )
+
+    @limiter.request_filter
+    def skip_high_frequency_camera_stream_limits():
+        path = request.path or ""
+        return path.startswith('/api/camera/process-client-frame') or path.startswith('/api/camera/feed/')
 
     # Configure CORS based on SQL defined origins or Env Var
     cors_origins = app.config.get('CORS_ORIGINS', ["http://localhost:3000", "http://127.0.0.1:3000"])
@@ -124,6 +129,12 @@ def create_app(config_class=Config):
     app.register_blueprint(settings_bp, url_prefix='/api/settings')
     app.register_blueprint(camera_bp, url_prefix='/api/camera')
     app.register_blueprint(events_bp, url_prefix='/api/events')
+    try:
+        from routes.settings import sync_runtime_settings_from_db
+        with app.app_context():
+            sync_runtime_settings_from_db()
+    except Exception as exc:
+        app.logger.warning("Could not apply persisted runtime settings on startup: %s", exc)
     ensure_default_admin(app)
 
     # --- JWT Configuration ---
@@ -175,4 +186,5 @@ def create_app(config_class=Config):
 app = create_app()
 
 if __name__ == '__main__':
-    socketio.run(app, host='0.0.0.0', port=5000, debug=True)
+    debug_mode = os.getenv('FLASK_DEBUG', '0') == '1'
+    socketio.run(app, host='0.0.0.0', port=5000, debug=debug_mode)

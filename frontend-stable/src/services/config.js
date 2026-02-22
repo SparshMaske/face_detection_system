@@ -14,9 +14,13 @@ const resolveDefaultApiBaseUrl = () => {
   return `${window.location.origin}/api`;
 };
 
+const envApiBaseUrl = process.env.REACT_APP_API_URL || process.env.VITE_API_URL;
+
 const API_BASE_URL =
-  process.env.REACT_APP_API_URL ||
-  process.env.VITE_API_URL ||
-  resolveDefaultApiBaseUrl();
+  typeof window !== 'undefined' &&
+  (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') &&
+  (envApiBaseUrl === '/api' || envApiBaseUrl === 'api')
+    ? 'http://127.0.0.1:5000/api'
+    : envApiBaseUrl || resolveDefaultApiBaseUrl();
 
 export default API_BASE_URL;

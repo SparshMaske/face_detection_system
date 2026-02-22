@@ -14,6 +14,11 @@ _CLIENT_CLEANUP_LOCK = Lock()
 
 
 def _apply_event_processing(frame, camera, fr_service, last_inactive_cleanup):
+    meta = {
+        'event_active': False,
+        'reason': 'unknown',
+        'stats': None,
+    }
     try:
         from routes.events import get_event_state_snapshot
         event_state = get_event_state_snapshot(sync=True)
@@ -23,14 +28,26 @@ def _apply_event_processing(frame, camera, fr_service, last_inactive_cleanup):
             event_active = False
 
         if event_active:
-            frame = fr_service.process_frame_for_stream(
-                frame,
-                camera,
-                event_context=event_state,
-            )
+            meta['event_active'] = True
+            if fr_service is None:
+                meta['reason'] = 'model_unavailable'
+            else:
+                result = fr_service.process_frame_for_stream(
+                    frame,
+                    camera,
+                    event_context=event_state,
+                    return_stats=True,
+                )
+                if isinstance(result, tuple):
+                    frame, stats = result
+                    meta['stats'] = stats
+                else:
+                    frame = result
+                meta['reason'] = 'processed'
         else:
+            meta['reason'] = 'event_inactive'
             now_local = datetime.datetime.now()
-            if (now_local - last_inactive_cleanup).total_seconds() >= 2.0:
+            if fr_service is not None and (now_local - last_inactive_cleanup).total_seconds() >= 2.0:
                 fr_service.finalize_active_sessions(
                     now_local=now_local,
                     event_start=event_state.get('start_time'),
@@ -40,8 +57,9 @@ def _apply_event_processing(frame, camera, fr_service, last_inactive_cleanup):
                 last_inactive_cleanup = now_local
     except Exception as exc:
         current_app.logger.warning("Stream frame annotation failed: %s", exc)
+        meta['reason'] = 'processing_error'
 
-    return frame, last_inactive_cleanup
+    return frame, last_inactive_cleanup, meta
 
 
 @camera_bp.route('/', methods=['GET'])
@@ -102,7 +120,7 @@ def stream_feed(camera_id):
                     break
                 
                 if fr_service is not None:
-                    frame, last_inactive_cleanup = _apply_event_processing(
+                    frame, last_inactive_cleanup, _ = _apply_event_processing(
                         frame,
                         cam,
                         fr_service,
@@ -166,12 +184,45 @@ def process_client_frame():
         current_app.logger.warning("Face model unavailable for client frame: %s", exc)
         fr_service = None
 
-    if fr_service is not None:
-        with _CLIENT_CLEANUP_LOCK:
-            last_cleanup = _CLIENT_CLEANUP_TIMES.get(cam.camera_id, datetime.datetime.min)
-        frame, last_cleanup = _apply_event_processing(frame, cam, fr_service, last_cleanup)
-        with _CLIENT_CLEANUP_LOCK:
-            _CLIENT_CLEANUP_TIMES[cam.camera_id] = last_cleanup
+    with _CLIENT_CLEANUP_LOCK:
+        last_cleanup = _CLIENT_CLEANUP_TIMES.get(cam.camera_id, datetime.datetime.min)
+    frame, last_cleanup, meta = _apply_event_processing(frame, cam, fr_service, last_cleanup)
+    with _CLIENT_CLEANUP_LOCK:
+        _CLIENT_CLEANUP_TIMES[cam.camera_id] = last_cleanup
+
+    info_text = None
+    info_color = (80, 220, 80)
+    if meta.get('reason') == 'processed':
+        stats = meta.get('stats') or {}
+        faces = int(stats.get('faces_detected') or 0)
+        staff_hits = int(stats.get('staff_matches') or 0)
+        visitor_hits = int(stats.get('known_visitors') or 0) + int(stats.get('new_visitors') or 0)
+        if faces <= 0:
+            info_text = "AI active: no face detected"
+            info_color = (0, 215, 255)
+        else:
+            info_text = f"AI active: faces={faces} staff={staff_hits} visitors={visitor_hits}"
+            info_color = (80, 220, 80)
+    elif meta.get('reason') == 'event_inactive':
+        info_text = "AI idle: event is not active for this camera"
+        info_color = (0, 200, 255)
+    elif meta.get('reason') == 'model_unavailable':
+        info_text = "AI error: face model unavailable on backend"
+        info_color = (0, 0, 255)
+    elif meta.get('reason') == 'processing_error':
+        info_text = "AI error: processing failed (check backend logs)"
+        info_color = (0, 0, 255)
+
+    if info_text:
+        cv2.putText(
+            frame,
+            info_text,
+            (16, max(24, frame.shape[0] - 18)),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.55,
+            info_color,
+            2,
+        )
 
     ok, jpeg = cv2.imencode('.jpg', frame, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
     if not ok:

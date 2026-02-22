@@ -1,8 +1,17 @@
 import { useEffect, useState } from 'react';
-import { getSettings, updateSettings } from '../services/settingsService';
+import { getSettings, getRuntimeSettings, updateSettings } from '../services/settingsService';
 import Card from '../components/Card';
 
 const FACE_VALIDATION_SLIDERS = [
+  {
+    key: 'detection_confidence_threshold',
+    label: 'Detection Confidence',
+    min: 0.1,
+    max: 0.9,
+    step: 0.01,
+    defaultValue: 0.35,
+    hint: 'Lower values detect more faces in low light, but may increase false positives.',
+  },
   {
     key: 'similarity_threshold',
     legacyKey: 'face_threshold',
@@ -53,6 +62,7 @@ const FACE_VALIDATION_SLIDERS = [
 
 export default function Settings() {
   const [settings, setSettings] = useState({});
+  const [runtimeSettings, setRuntimeSettings] = useState({});
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
@@ -68,6 +78,12 @@ export default function Settings() {
           normalized[item.key] = item.value;
         });
         setSettings(normalized);
+        try {
+          const runtime = await getRuntimeSettings();
+          setRuntimeSettings(runtime?.data || {});
+        } catch (_) {
+          setRuntimeSettings({});
+        }
       } catch (err) {
         setError('Failed to load system settings');
       } finally {
@@ -101,6 +117,12 @@ export default function Settings() {
       setSaving(true);
       setError('');
       await updateSettings(settings);
+      try {
+        const runtime = await getRuntimeSettings();
+        setRuntimeSettings(runtime?.data || {});
+      } catch (_) {
+        // Keep save success even if runtime readback fails.
+      }
       alert('Settings updated successfully');
     } catch (err) {
       setError('Failed to update settings');
@@ -151,6 +173,17 @@ export default function Settings() {
           <button onClick={handleSave} className="btn btn-primary" disabled={saving}>
             {saving ? 'Saving...' : 'Save Changes'}
           </button>
+        </div>
+      </Card>
+
+      <Card title="Runtime Validation (Active Backend Values)">
+        <div className="text-sm space-y-1">
+          <div>Detection Confidence: <strong>{runtimeSettings.detection_confidence_threshold ?? 'N/A'}</strong></div>
+          <div>Similarity Threshold: <strong>{runtimeSettings.similarity_threshold ?? 'N/A'}</strong></div>
+          <div>Staff Match Threshold: <strong>{runtimeSettings.staff_similarity_threshold ?? 'N/A'}</strong></div>
+          <div>Blur Threshold: <strong>{runtimeSettings.blur_threshold ?? 'N/A'}</strong></div>
+          <div>Tilt Threshold: <strong>{runtimeSettings.tilt_threshold ?? 'N/A'}</strong></div>
+          <div>Min Face Area: <strong>{runtimeSettings.min_face_area ?? 'N/A'}</strong></div>
         </div>
       </Card>
     </div>

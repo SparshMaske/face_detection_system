@@ -29,7 +29,7 @@ class Config:
     REPORTS_FOLDER = os.path.join(BASE_DIR, 'reports')
     
     # Face Recognition Thresholds (Used in Services)
-    FACE_CONFIDENCE_THRESHOLD = float(os.getenv('FACE_CONFIDENCE_THRESHOLD', 0.5))
+    FACE_CONFIDENCE_THRESHOLD = float(os.getenv('FACE_CONFIDENCE_THRESHOLD', 0.35))
     FACE_SIMILARITY_THRESHOLD = float(os.getenv('FACE_SIMILARITY_THRESHOLD', 0.5))
     STAFF_SIMILARITY_THRESHOLD = float(os.getenv('STAFF_SIMILARITY_THRESHOLD', 0.65))
     MIN_FACE_AREA = int(os.getenv('MIN_FACE_AREA', 11000))

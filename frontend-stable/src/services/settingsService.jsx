@@ -7,3 +7,7 @@ export const getSettings = async () => {
 export const updateSettings = async (data) => {
   return api.post('/settings/', data);
 };
+
+export const getRuntimeSettings = async () => {
+  return api.get('/settings/runtime');
+};

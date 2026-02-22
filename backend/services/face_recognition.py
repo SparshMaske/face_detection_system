@@ -86,6 +86,33 @@ class FaceRecognitionService:
         roll_angle_deg = abs(float(np.degrees(np.arctan2(dy, dx))))
         return True, yaw_ratio, roll_angle_deg
 
+    @staticmethod
+    def _draw_labeled_box(frame, bbox, label, color, thickness=2, font_scale=0.58):
+        x1, y1, x2, y2 = bbox
+        cv2.rectangle(frame, (x1, y1), (x2, y2), color, thickness)
+        if not label:
+            return
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        text_size, baseline = cv2.getTextSize(label, font, font_scale, 2)
+        tw, th = text_size
+        top_y = y1 - th - 12
+        if top_y < 0:
+            top_y = y1 + 4
+        left_x = max(0, x1)
+        right_x = min(frame.shape[1] - 1, left_x + tw + 12)
+        bottom_y = min(frame.shape[0] - 1, top_y + th + baseline + 10)
+        cv2.rectangle(frame, (left_x, top_y), (right_x, bottom_y), color, -1)
+        cv2.putText(
+            frame,
+            label,
+            (left_x + 6, min(frame.shape[0] - 6, top_y + th + 2)),
+            font,
+            font_scale,
+            (255, 255, 255),
+            2,
+            cv2.LINE_AA,
+        )
+
     def _sync_embedding_cache(self, force=False):
         now = datetime.datetime.now()
         if not force and (now - self._last_cache_sync).total_seconds() < 15:
@@ -394,7 +421,7 @@ class FaceRecognitionService:
             raw = getattr(faces[0], 'embedding', None)
         return self._norm(raw)
 
-    def process_frame_for_stream(self, frame, camera=None, event_context=None):
+    def process_frame_for_stream(self, frame, camera=None, event_context=None, return_stats=False):
         now_local = datetime.datetime.now()
         self._sync_embedding_cache()
         self._sync_staff_cache()
@@ -408,12 +435,29 @@ class FaceRecognitionService:
         min_face_area = int(cfg.get('MIN_FACE_AREA', 11000))
 
         camera_db_id = getattr(camera, 'id', None)
+        camera_type = str(getattr(camera, 'camera_type', '') or '').lower()
+        is_browser_camera = camera_type == 'browser'
+        if is_browser_camera:
+            # Browser/device cameras (phone/laptop) are often noisier and lower detail;
+            # relax validation gates so detection remains practical in live sessions.
+            conf_threshold = min(conf_threshold, 0.30)
+            blur_threshold = min(blur_threshold, 22.0)
+            min_face_area = min(min_face_area, 5000)
+            tilt_threshold = max(tilt_threshold, 0.45)
+
         event_start = event_context.get('start_time') if event_context else None
         event_end = event_context.get('end_time') if event_context else None
         faces = self.app.get(frame)
         valid_db_ids = set()
         invalid_bboxes = []
         changed = False
+        stats = {
+            'faces_detected': int(len(faces)),
+            'staff_matches': 0,
+            'new_visitors': 0,
+            'known_visitors': 0,
+            'rejected_faces': 0,
+        }
 
         for face in faces:
             box = face.bbox.astype(int)
@@ -430,15 +474,15 @@ class FaceRecognitionService:
             score = float(getattr(face, 'det_score', 0.0))
             if score < conf_threshold:
                 invalid_bboxes.append(current_bbox)
-                cv2.rectangle(frame, (x1, y1), (x2, y2), (80, 80, 255), 1)
-                cv2.putText(frame, "Low Conf", (x1, max(20, y1 - 10)), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (80, 80, 255), 2)
+                stats['rejected_faces'] += 1
+                self._draw_labeled_box(frame, current_bbox, "Low Conf", (80, 80, 255), thickness=2)
                 continue
 
             face_area = (x2 - x1) * (y2 - y1)
             if face_area < min_face_area:
                 invalid_bboxes.append(current_bbox)
-                cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 0, 255), 1)
-                cv2.putText(frame, "Too Far", (x1, max(20, y1 - 10)), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 255), 2)
+                stats['rejected_faces'] += 1
+                self._draw_labeled_box(frame, current_bbox, "Too Far", (0, 0, 255), thickness=2)
                 continue
 
             try:
@@ -448,16 +492,16 @@ class FaceRecognitionService:
                 blur_value = 0.0
             if blur_value < blur_threshold:
                 invalid_bboxes.append(current_bbox)
-                cv2.rectangle(frame, (x1, y1), (x2, y2), (30, 30, 255), 1)
-                cv2.putText(frame, "Blurry", (x1, max(20, y1 - 10)), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (30, 30, 255), 2)
+                stats['rejected_faces'] += 1
+                self._draw_labeled_box(frame, current_bbox, "Blurry", (30, 30, 255), thickness=2)
                 continue
 
             has_pose, yaw_ratio, roll_angle_deg = self._tilt_metrics(face)
             max_roll = max(5.0, tilt_threshold * 45.0)
             if has_pose and (yaw_ratio > tilt_threshold or roll_angle_deg > max_roll):
                 invalid_bboxes.append(current_bbox)
-                cv2.rectangle(frame, (x1, y1), (x2, y2), (255, 60, 255), 2)
-                cv2.putText(frame, "Tilted", (x1, max(20, y1 - 10)), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 60, 255), 2)
+                stats['rejected_faces'] += 1
+                self._draw_labeled_box(frame, current_bbox, "Tilted", (255, 60, 255), thickness=2)
                 continue
 
             emb = getattr(face, 'normed_embedding', None)
@@ -466,6 +510,7 @@ class FaceRecognitionService:
             emb = self._norm(emb)
             if emb is None:
                 invalid_bboxes.append(current_bbox)
+                stats['rejected_faces'] += 1
                 continue
 
             matched_staff, staff_score = self.find_matching_staff(
@@ -476,19 +521,11 @@ class FaceRecognitionService:
             )
             if matched_staff is not None:
                 self._clear_pending_for_bbox(current_bbox)
+                stats['staff_matches'] += 1
                 staff_role = (matched_staff.position or matched_staff.department or 'Staff').strip()
-                label = f"{matched_staff.staff_id} | {matched_staff.name} [{staff_role}] ({staff_score:.2f})"
+                label = f"{matched_staff.staff_id} [{staff_role}] {staff_score:.2f}"
                 color = (255, 170, 0)
-                cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
-                cv2.putText(
-                    frame,
-                    label,
-                    (x1, max(20, y1 - 10)),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.56,
-                    color,
-                    2,
-                )
+                self._draw_labeled_box(frame, current_bbox, label, color, thickness=2)
                 continue
 
             matched_db_id, matched_score = self._match_visitor(emb, similarity_threshold)
@@ -498,18 +535,11 @@ class FaceRecognitionService:
             if matched_db_id is None:
                 candidate = self._upsert_pending_candidate(current_bbox, emb, now_local)
                 min_frames = max(1, int(cfg.get('UNKNOWN_FACE_MIN_FRAMES', 3)))
+                if is_browser_camera:
+                    min_frames = min(min_frames, 1)
                 if int(candidate.get('count', 0)) < min_frames:
                     color = (0, 200, 255)
-                    cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
-                    cv2.putText(
-                        frame,
-                        "Analyzing...",
-                        (x1, max(20, y1 - 10)),
-                        cv2.FONT_HERSHEY_SIMPLEX,
-                        0.56,
-                        color,
-                        2,
-                    )
+                    self._draw_labeled_box(frame, current_bbox, "Analyzing...", color, thickness=2)
                     continue
 
                 self._clear_specific_candidate(candidate)
@@ -546,6 +576,7 @@ class FaceRecognitionService:
                     'camera_id': camera_db_id,
                 }
                 valid_db_ids.add(visitor.id)
+                stats['new_visitors'] += 1
                 label = f"{visitor_code} (New)"
                 color = (0, 255, 255)
                 changed = True
@@ -570,18 +601,10 @@ class FaceRecognitionService:
                 label = f"{visitor.visitor_id} ({matched_score:.2f})"
                 color = (0, 255, 0)
                 valid_db_ids.add(visitor.id)
+                stats['known_visitors'] += 1
                 changed = True
 
-            cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
-            cv2.putText(
-                frame,
-                label,
-                (x1, max(20, y1 - 10)),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.60,
-                color,
-                2,
-            )
+            self._draw_labeled_box(frame, current_bbox, label, color, thickness=2)
 
         if self._finalize_absent_sessions(
             valid_db_ids,
@@ -602,6 +625,8 @@ class FaceRecognitionService:
                 db.session.rollback()
                 current_app.logger.warning("Failed to persist recognition update: %s", exc)
 
+        if return_stats:
+            return frame, stats
         return frame
 
     def compare_faces(self, embedding1, embedding2, threshold=0.5):

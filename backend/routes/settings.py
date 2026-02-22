@@ -5,6 +5,11 @@ from models import db
 from models.camera import SystemSettings
 
 DEFAULT_SETTINGS = {
+    'detection_confidence_threshold': {
+        'value': 0.35,
+        'value_type': 'float',
+        'description': 'Minimum detector confidence score for a face candidate',
+    },
     'similarity_threshold': {
         'value': 0.5,
         'value_type': 'float',
@@ -38,6 +43,7 @@ DEFAULT_SETTINGS = {
 }
 
 CONFIG_KEY_MAP = {
+    'detection_confidence_threshold': ('FACE_CONFIDENCE_THRESHOLD', float),
     'similarity_threshold': ('FACE_SIMILARITY_THRESHOLD', float),
     'staff_similarity_threshold': ('STAFF_SIMILARITY_THRESHOLD', float),
     'face_threshold': ('FACE_SIMILARITY_THRESHOLD', float),
@@ -79,10 +85,32 @@ def _apply_runtime_config(key, value):
     current_app.config[config_key] = caster(value)
 
 
+def _parse_setting_value(raw_value):
+    if isinstance(raw_value, (int, float, bool)):
+        return raw_value
+    text = str(raw_value).strip()
+    lowered = text.lower()
+    if lowered in ('true', 'false'):
+        return lowered == 'true'
+    try:
+        if '.' in text:
+            return float(text)
+        return int(text)
+    except Exception:
+        return text
+
+
+def sync_runtime_settings_from_db():
+    """Apply persisted system settings into runtime app config."""
+    _ensure_default_settings()
+    for row in SystemSettings.query.all():
+        _apply_runtime_config(row.key, _parse_setting_value(row.value))
+
+
 @settings_bp.route('/', methods=['GET'])
 @jwt_required()
 def get_settings():
-    _ensure_default_settings()
+    sync_runtime_settings_from_db()
     settings = SystemSettings.query.all()
     return jsonify([s.to_dict() for s in settings])
 
@@ -154,3 +182,13 @@ def update_settings():
 
     db.session.commit()
     return jsonify({'updated': sorted(set(updated_keys))})
+
+
+@settings_bp.route('/runtime', methods=['GET'])
+@jwt_required()
+def get_runtime_settings_status():
+    sync_runtime_settings_from_db()
+    payload = {}
+    for key, (config_key, _) in CONFIG_KEY_MAP.items():
+        payload[key] = current_app.config.get(config_key)
+    return jsonify(payload)

@@ -14,6 +14,7 @@ export default function LiveView() {
   const [deviceError, setDeviceError] = useState('');
   const [isFramePending, setIsFramePending] = useState(false);
   const [cameraFacingMode, setCameraFacingMode] = useState('environment');
+  const [backendUnavailable, setBackendUnavailable] = useState(false);
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
   const localStreamRef = useRef(null);
@@ -73,9 +74,13 @@ export default function LiveView() {
 
       if (cameraRes.status === 'rejected') {
         setError('Failed to load camera list. Check backend connection and login token.');
+        setBackendUnavailable(true);
+      } else {
+        setBackendUnavailable(false);
       }
     } catch (_) {
       setError('Failed to load camera list. Check backend connection and login token.');
+      setBackendUnavailable(true);
     } finally {
       setLoading(false);
     }
@@ -95,7 +100,7 @@ export default function LiveView() {
   useEffect(() => {
     const id = window.setInterval(() => {
       fetchCamerasAndEvent();
-    }, 5000);
+    }, 15000);
     return () => window.clearInterval(id);
   }, [fetchCamerasAndEvent]);
 
@@ -136,8 +141,9 @@ export default function LiveView() {
     let cancelled = false;
     let timerId = null;
     let hasRenderedFrame = false;
+    let retryDelayMs = isPhoneClient ? 900 : 520;
 
-    const scheduleNext = (delayMs = 260) => {
+    const scheduleNext = (delayMs = retryDelayMs) => {
       if (cancelled) return;
       timerId = window.setTimeout(processNextFrame, delayMs);
     };
@@ -154,7 +160,14 @@ export default function LiveView() {
               const msg = parsed?.error || parsed?.message || parsed?.msg;
               if (msg) return String(msg);
             } catch (_) {
-              return text.slice(0, 220);
+              const compact = text.replace(/\s+/g, ' ').trim();
+              if (compact.toLowerCase().includes('too many requests')) {
+                return 'Frame upload is being rate-limited. Retrying automatically...';
+              }
+              if (compact.toLowerCase().includes('could not proxy request') || compact.toLowerCase().includes('econnreset')) {
+                return 'Backend connection reset. Ensure backend server is running on port 5000 and retry.';
+              }
+              return compact.slice(0, 220);
             }
           }
         } catch (_) {
@@ -193,7 +206,7 @@ export default function LiveView() {
         return;
       }
 
-      const maxWidth = 960;
+      const maxWidth = isPhoneClient ? 640 : 960;
       const scale = Math.min(1, maxWidth / sourceWidth);
       canvasEl.width = Math.max(2, Math.floor(sourceWidth * scale));
       canvasEl.height = Math.max(2, Math.floor(sourceHeight * scale));
@@ -244,17 +257,26 @@ export default function LiveView() {
           setProcessedFrameUrl(nextUrl);
           setStreamError('');
           hasRenderedFrame = true;
+          setBackendUnavailable(false);
+          retryDelayMs = isPhoneClient ? 900 : 550;
         }
       } catch (err) {
         if (!cancelled) {
           const msg = await parseApiErrorMessage(err);
           setStreamError(msg);
+          if (
+            String(msg).toLowerCase().includes('backend connection reset') ||
+            String(msg).toLowerCase().includes('verify backend reachability')
+          ) {
+            setBackendUnavailable(true);
+          }
+          retryDelayMs = Math.min(Math.max(retryDelayMs * 1.35, 900), 5000);
         }
       } finally {
         if (!cancelled) {
           setIsFramePending(false);
         }
-        scheduleNext(260);
+        scheduleNext();
       }
     };
 
@@ -322,7 +344,7 @@ export default function LiveView() {
       if (timerId) window.clearTimeout(timerId);
       stopLocalCamera(false);
     };
-  }, [cameraFacingMode, clearProcessedFrame, isClientDeviceMode, selectedCamera?.camera_id, stopLocalCamera]);
+  }, [cameraFacingMode, clearProcessedFrame, isClientDeviceMode, isPhoneClient, selectedCamera?.camera_id, stopLocalCamera]);
 
   useEffect(() => () => stopLocalCamera(true), [stopLocalCamera]);
 
@@ -366,6 +388,11 @@ export default function LiveView() {
       {eventInfo?.event_name && (
         <div className="text-sm text-gray-600">
           Event: <strong>{eventInfo.event_name}</strong> | Status: <strong>{eventInfo.status}</strong>
+        </div>
+      )}
+      {backendUnavailable && (
+        <div className="text-sm text-red-600">
+          Backend appears unreachable right now. Confirm backend is running at `http://127.0.0.1:5000`.
         </div>
       )}
 
