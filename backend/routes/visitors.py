@@ -63,6 +63,17 @@ def _event_window_summary(visitor, windows):
         'duration_formatted': _format_duration(duration_seconds),
     }
 
+
+def _build_event_display_id_map(visitors, windows):
+    rows = []
+    for visitor in visitors:
+        summary = _event_window_summary(visitor, windows)
+        if summary is None:
+            continue
+        rows.append((visitor.id, summary['first_seen']))
+    rows.sort(key=lambda item: item[1])
+    return {visitor_db_id: f"ID{index}" for index, (visitor_db_id, _) in enumerate(rows, start=1)}
+
 @visitors_bp.route('/', methods=['GET'])
 @jwt_required()
 def get_visitors():
@@ -109,6 +120,14 @@ def get_visitors():
             for window_start, window_end in event_windows
         ]
         query = query.join(VisitorSession).filter(or_(*overlap_conditions)).distinct()
+
+    event_display_id_map = {}
+    if event_windows:
+        try:
+            all_event_visitors = query.order_by(Visitor.first_seen.asc()).all()
+            event_display_id_map = _build_event_display_id_map(all_event_visitors, event_windows)
+        except Exception:
+            event_display_id_map = {}
             
     pagination = query.paginate(page=page, per_page=per_page, error_out=False)
     visitor_rows = []
@@ -124,6 +143,7 @@ def get_visitors():
             payload['event_duration_seconds'] = summary['duration_seconds']
             payload['event_duration_formatted'] = summary['duration_formatted']
             payload['event_name'] = event_name
+            payload['event_display_id'] = event_display_id_map.get(visitor.id, payload.get('visitor_id'))
         visitor_rows.append(payload)
     
     return jsonify({

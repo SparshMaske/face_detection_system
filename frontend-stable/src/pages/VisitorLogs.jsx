@@ -45,7 +45,7 @@ export default function VisitorLogs() {
             <tbody>
               {visitors.map(v => (
                 <tr key={v.id}>
-                  <td>{v.visitor_id}</td>
+                  <td>{v.event_display_id || v.visitor_id}</td>
                   <td>{new Date(v.first_seen).toLocaleDateString()}</td>
                   <td>{new Date(v.last_seen).toLocaleString()}</td>
                   <td>{v.event_duration_formatted || '-'}</td>

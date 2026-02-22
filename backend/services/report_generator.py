@@ -4,6 +4,7 @@ from datetime import datetime
 from flask import current_app
 from models.visitor import Visitor, VisitorSession
 from sqlalchemy import or_
+import cv2
 
 try:
     from reportlab.lib import colors
@@ -57,6 +58,71 @@ class ReportGenerator:
         hours, remainder = divmod(total, 3600)
         minutes, secs = divmod(remainder, 60)
         return f"{hours:02d}:{minutes:02d}:{secs:02d}"
+
+    def _resolve_visitor_image_path(self, visitor):
+        upload_root = current_app.config.get('UPLOAD_FOLDER')
+        if not upload_root:
+            return None
+
+        candidates = []
+        if visitor.primary_image_path:
+            candidates.append(visitor.primary_image_path)
+
+        # Fallback to newest stored visitor image if primary path is unavailable.
+        images = sorted(visitor.images or [], key=lambda item: item.captured_at or datetime.min, reverse=True)
+        for item in images:
+            if item.image_path:
+                candidates.append(item.image_path)
+
+        for rel_path in candidates:
+            abs_path = os.path.join(upload_root, rel_path)
+            if os.path.exists(abs_path):
+                return abs_path
+        return None
+
+    def _prepare_face_to_shoulder_snapshot(self, image_path, visitor_code):
+        if not image_path or not os.path.exists(image_path):
+            return image_path
+        try:
+            img = cv2.imread(image_path)
+            if img is None:
+                return image_path
+            gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+            cascade_path = os.path.join(cv2.data.haarcascades, 'haarcascade_frontalface_default.xml')
+            face_cascade = cv2.CascadeClassifier(cascade_path)
+            if face_cascade.empty():
+                return image_path
+
+            faces = face_cascade.detectMultiScale(
+                gray,
+                scaleFactor=1.1,
+                minNeighbors=5,
+                minSize=(48, 48),
+            )
+            if len(faces) == 0:
+                return image_path
+
+            x, y, w, h = max(faces, key=lambda face: face[2] * face[3])
+            img_h, img_w = img.shape[:2]
+            expand_x = int(w * 0.35)
+            expand_y_top = int(h * 0.35)
+            expand_y_bottom = int(h * 1.55)
+
+            nx1 = max(0, x - expand_x)
+            ny1 = max(0, y - expand_y_top)
+            nx2 = min(img_w, x + w + expand_x)
+            ny2 = min(img_h, y + h + expand_y_bottom)
+            crop = img[ny1:ny2, nx1:nx2]
+            if crop.size == 0:
+                return image_path
+
+            snapshots_dir = os.path.join(self.visitor_reports_dir, 'snapshots')
+            os.makedirs(snapshots_dir, exist_ok=True)
+            snapshot_path = os.path.join(snapshots_dir, f"{visitor_code}_face_shoulder.jpg")
+            cv2.imwrite(snapshot_path, crop)
+            return snapshot_path
+        except Exception:
+            return image_path
 
     def _build_summary_with_reportlab(self, filepath, title_text, subtitle_text, rows):
         doc = SimpleDocTemplate(filepath, pagesize=A4)
@@ -276,8 +342,8 @@ class ReportGenerator:
         duration_seconds = sum(max(0, int((out - inn).total_seconds())) for inn, out, _ in normalized_sessions)
         duration_text = self._format_duration(duration_seconds)
         capture_date_text = first_in.strftime('%Y-%m-%d')
-        upload_root = current_app.config.get('UPLOAD_FOLDER')
-        visitor_image_path = os.path.join(upload_root, visitor.primary_image_path) if (upload_root and visitor.primary_image_path) else None
+        visitor_image_path = self._resolve_visitor_image_path(visitor)
+        visitor_image_path = self._prepare_face_to_shoulder_snapshot(visitor_image_path, visitor.visitor_id)
 
         filename = f"{visitor.visitor_id}_report.pdf"
         filepath = os.path.join(self.visitor_reports_dir, filename)
