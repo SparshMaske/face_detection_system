@@ -87,30 +87,29 @@ class FaceRecognitionService:
         return True, yaw_ratio, roll_angle_deg
 
     @staticmethod
-    def _draw_labeled_box(frame, bbox, label, color, thickness=2, font_scale=0.58):
+    def _draw_papp_style_box(frame, bbox, label, color, thickness=2, font_scale=0.6, text_thickness=2, y_offset=-10):
+        """
+        Match P_app.py box visibility parameters:
+        - Recognized/New: box thickness=2, font_scale=0.6, text at y1-10
+        - Too Far/Blurry: box thickness=1, font_scale=0.5, text near y1
+        - Tilted: box thickness=2, font_scale=0.6
+        """
         x1, y1, x2, y2 = bbox
-        cv2.rectangle(frame, (x1, y1), (x2, y2), color, thickness)
+        cv2.rectangle(frame, (x1, y1), (x2, y2), color, max(1, int(thickness)))
         if not label:
             return
-        font = cv2.FONT_HERSHEY_SIMPLEX
-        text_size, baseline = cv2.getTextSize(label, font, font_scale, 2)
-        tw, th = text_size
-        top_y = y1 - th - 12
-        if top_y < 0:
-            top_y = y1 + 4
-        left_x = max(0, x1)
-        right_x = min(frame.shape[1] - 1, left_x + tw + 12)
-        bottom_y = min(frame.shape[0] - 1, top_y + th + baseline + 10)
-        cv2.rectangle(frame, (left_x, top_y), (right_x, bottom_y), color, -1)
+        text_x = max(0, x1)
+        desired_y = y1 + int(y_offset)
+        if desired_y < 16:
+            desired_y = y1 + 16
         cv2.putText(
             frame,
             label,
-            (left_x + 6, min(frame.shape[0] - 6, top_y + th + 2)),
-            font,
-            font_scale,
-            (255, 255, 255),
-            2,
-            cv2.LINE_AA,
+            (text_x, desired_y),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            float(font_scale),
+            color,
+            max(1, int(text_thickness)),
         )
 
     def _sync_embedding_cache(self, force=False):
@@ -475,14 +474,23 @@ class FaceRecognitionService:
             if score < conf_threshold:
                 invalid_bboxes.append(current_bbox)
                 stats['rejected_faces'] += 1
-                self._draw_labeled_box(frame, current_bbox, "Low Conf", (80, 80, 255), thickness=2)
+                # P_app.py behavior: skip low-confidence detections without drawing.
                 continue
 
             face_area = (x2 - x1) * (y2 - y1)
             if face_area < min_face_area:
                 invalid_bboxes.append(current_bbox)
                 stats['rejected_faces'] += 1
-                self._draw_labeled_box(frame, current_bbox, "Too Far", (0, 0, 255), thickness=2)
+                self._draw_papp_style_box(
+                    frame,
+                    current_bbox,
+                    "Too Far",
+                    (0, 0, 255),
+                    thickness=1,
+                    font_scale=0.5,
+                    text_thickness=1,
+                    y_offset=0,
+                )
                 continue
 
             try:
@@ -493,7 +501,16 @@ class FaceRecognitionService:
             if blur_value < blur_threshold:
                 invalid_bboxes.append(current_bbox)
                 stats['rejected_faces'] += 1
-                self._draw_labeled_box(frame, current_bbox, "Blurry", (30, 30, 255), thickness=2)
+                self._draw_papp_style_box(
+                    frame,
+                    current_bbox,
+                    "Blurry",
+                    (0, 0, 255),
+                    thickness=1,
+                    font_scale=0.5,
+                    text_thickness=1,
+                    y_offset=0,
+                )
                 continue
 
             has_pose, yaw_ratio, roll_angle_deg = self._tilt_metrics(face)
@@ -501,7 +518,16 @@ class FaceRecognitionService:
             if has_pose and (yaw_ratio > tilt_threshold or roll_angle_deg > max_roll):
                 invalid_bboxes.append(current_bbox)
                 stats['rejected_faces'] += 1
-                self._draw_labeled_box(frame, current_bbox, "Tilted", (255, 60, 255), thickness=2)
+                self._draw_papp_style_box(
+                    frame,
+                    current_bbox,
+                    "Tilted",
+                    (255, 0, 255),
+                    thickness=2,
+                    font_scale=0.6,
+                    text_thickness=2,
+                    y_offset=0,
+                )
                 continue
 
             emb = getattr(face, 'normed_embedding', None)
@@ -525,7 +551,7 @@ class FaceRecognitionService:
                 staff_role = (matched_staff.position or matched_staff.department or 'Staff').strip()
                 label = f"{matched_staff.staff_id} [{staff_role}] {staff_score:.2f}"
                 color = (255, 170, 0)
-                self._draw_labeled_box(frame, current_bbox, label, color, thickness=2)
+                self._draw_papp_style_box(frame, current_bbox, label, color, thickness=2, font_scale=0.6, text_thickness=2, y_offset=-10)
                 continue
 
             matched_db_id, matched_score = self._match_visitor(emb, similarity_threshold)
@@ -539,7 +565,7 @@ class FaceRecognitionService:
                     min_frames = min(min_frames, 1)
                 if int(candidate.get('count', 0)) < min_frames:
                     color = (0, 200, 255)
-                    self._draw_labeled_box(frame, current_bbox, "Analyzing...", color, thickness=2)
+                    self._draw_papp_style_box(frame, current_bbox, "Analyzing...", color, thickness=2, font_scale=0.6, text_thickness=2, y_offset=-10)
                     continue
 
                 self._clear_specific_candidate(candidate)
@@ -604,7 +630,7 @@ class FaceRecognitionService:
                 stats['known_visitors'] += 1
                 changed = True
 
-            self._draw_labeled_box(frame, current_bbox, label, color, thickness=2)
+            self._draw_papp_style_box(frame, current_bbox, label, color, thickness=2, font_scale=0.6, text_thickness=2, y_offset=-10)
 
         if self._finalize_absent_sessions(
             valid_db_ids,
