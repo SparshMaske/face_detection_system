@@ -305,6 +305,44 @@ class FaceRecognitionService:
             return best_db_id, best_score
         return None, best_score
 
+    def _resolve_identity(
+        self,
+        embedding: np.ndarray,
+        bbox,
+        now_local: datetime.datetime,
+        camera_db_id: Optional[int],
+        visitor_threshold: float,
+        staff_threshold: float,
+    ):
+        """
+        Recognition order (as requested):
+        1) Compare against staff embeddings.
+        2) Compare against existing visitor embeddings.
+        3) If no match -> caller registers as new visitor.
+        """
+        matched_staff, staff_score = self.find_matching_staff(
+            embedding,
+            db.session,
+            threshold=staff_threshold,
+            with_score=True,
+        )
+        if matched_staff is not None:
+            return 'staff', matched_staff, staff_score
+
+        matched_db_id, matched_score = self._match_visitor(embedding, visitor_threshold)
+        if matched_db_id is None:
+            matched_db_id, matched_score = self._match_recent_active_track(
+                embedding,
+                bbox,
+                now_local,
+                camera_db_id,
+                base_threshold=visitor_threshold,
+            )
+        if matched_db_id is not None:
+            return 'visitor', matched_db_id, matched_score
+
+        return None, None, -1.0
+
     def _detect_faces(self, frame):
         faces = self.app.get(frame)
         if faces:
@@ -643,30 +681,28 @@ class FaceRecognitionService:
                 stats['rejected_faces'] += 1
                 continue
 
-            matched_staff, staff_score = self.find_matching_staff(
+            identity_type, identity_value, identity_score = self._resolve_identity(
                 emb,
-                db.session,
-                threshold=staff_similarity_threshold,
-                with_score=True,
+                current_bbox,
+                now_local,
+                camera_db_id,
+                visitor_threshold=similarity_threshold,
+                staff_threshold=staff_similarity_threshold,
             )
-            if matched_staff is not None:
+
+            if identity_type == 'staff':
+                matched_staff = identity_value
+                staff_score = identity_score
                 self._clear_pending_for_bbox(current_bbox, camera_db_id=camera_db_id)
                 stats['staff_matches'] += 1
                 staff_role = (matched_staff.position or matched_staff.department or 'Staff').strip()
-                label = f"{matched_staff.staff_id} [{staff_role}] {staff_score:.2f}"
+                label = f"{matched_staff.staff_id} [{staff_role}]"
                 color = (255, 170, 0)
                 self._draw_papp_style_box(frame, current_bbox, label, color, thickness=2, font_scale=0.6, text_thickness=2, y_offset=-10)
                 continue
 
-            matched_db_id, matched_score = self._match_visitor(emb, similarity_threshold)
-            if matched_db_id is None:
-                matched_db_id, matched_score = self._match_recent_active_track(
-                    emb,
-                    current_bbox,
-                    now_local,
-                    camera_db_id,
-                    base_threshold=similarity_threshold,
-                )
+            matched_db_id = identity_value if identity_type == 'visitor' else None
+            matched_score = identity_score
             label = "Unknown"
             color = (0, 255, 255)
 
@@ -717,7 +753,7 @@ class FaceRecognitionService:
                 }
                 valid_db_ids.add(visitor.id)
                 stats['new_visitors'] += 1
-                label = f"{visitor_code} (New)"
+                label = f"{visitor_code} [New Visitor]"
                 color = (0, 255, 255)
                 changed = True
             else:
@@ -739,7 +775,7 @@ class FaceRecognitionService:
                     if updated is not None:
                         self._embeddings[visitor.id] = updated
                         visitor.embedding = updated.astype(np.float32).tobytes()
-                label = f"{visitor.visitor_id} ({matched_score:.2f})"
+                label = f"{visitor.visitor_id} [Visitor]"
                 color = (0, 255, 0)
                 valid_db_ids.add(visitor.id)
                 stats['known_visitors'] += 1
