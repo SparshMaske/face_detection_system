@@ -269,8 +269,6 @@ class ReportGenerator:
 
             image_path = visitor_item.get('snapshot_path')
             if image_path and os.path.exists(image_path):
-                elements.append(Paragraph("Visitor Snapshot (Face to Shoulder)", styles['Heading3']))
-                elements.append(Spacer(1, 6))
                 elements.append(Image(image_path, width=180, height=230))
                 elements.append(Spacer(1, 8))
 
@@ -316,8 +314,6 @@ class ReportGenerator:
             image_path = visitor_item.get('snapshot_path')
             if image_path and os.path.exists(image_path):
                 pdf.ln(8)
-                pdf.set_font('Arial', 'B', 11)
-                pdf.cell(0, 8, 'Visitor Snapshot (Face to Shoulder)', ln=1)
                 try:
                     pdf.image(image_path, w=62)
                 except Exception:
@@ -328,6 +324,7 @@ class ReportGenerator:
     def _build_visitor_with_reportlab(
         self,
         filepath,
+        visitor_code,
         first_in,
         last_out,
         duration_text,
@@ -338,7 +335,7 @@ class ReportGenerator:
         styles = getSampleStyleSheet()
         elements = []
 
-        elements.append(Paragraph("Visitor Presence Report", styles['Title']))
+        elements.append(Paragraph(f"Visitor ID: {visitor_code}", styles['Title']))
         elements.append(Spacer(1, 8))
 
         summary_table = Table([
@@ -360,14 +357,13 @@ class ReportGenerator:
         elements.append(Spacer(1, 14))
 
         if visitor_image_path and os.path.exists(visitor_image_path):
-            elements.append(Paragraph("Visitor Snapshot (Face to Shoulder)", styles['Heading3']))
-            elements.append(Spacer(1, 8))
             elements.append(Image(visitor_image_path, width=180, height=230))
         doc.build(elements)
 
     def _build_visitor_with_fpdf(
         self,
         filepath,
+        visitor_code,
         first_in,
         last_out,
         duration_text,
@@ -378,7 +374,7 @@ class ReportGenerator:
         pdf.set_auto_page_break(auto=True, margin=12)
         pdf.add_page()
         pdf.set_font('Arial', 'B', 16)
-        pdf.cell(0, 10, 'Visitor Presence Report', ln=1)
+        pdf.cell(0, 10, self._safe_text(f"Visitor ID: {visitor_code}"), ln=1)
 
         pdf.set_font('Arial', 'B', 10)
         summary_rows = [
@@ -393,8 +389,6 @@ class ReportGenerator:
 
         if visitor_image_path and os.path.exists(visitor_image_path):
             pdf.ln(8)
-            pdf.set_font('Arial', 'B', 11)
-            pdf.cell(0, 8, 'Visitor Snapshot (Face to Shoulder)', ln=1)
             try:
                 pdf.image(visitor_image_path, w=62)
             except Exception:
@@ -514,6 +508,7 @@ class ReportGenerator:
         if REPORTLAB_AVAILABLE:
             self._build_visitor_with_reportlab(
                 filepath,
+                visitor.visitor_id,
                 first_in,
                 last_out,
                 duration_text,
@@ -523,6 +518,7 @@ class ReportGenerator:
         else:
             self._build_visitor_with_fpdf(
                 filepath,
+                visitor.visitor_id,
                 first_in,
                 last_out,
                 duration_text,
