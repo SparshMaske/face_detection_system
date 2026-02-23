@@ -1,5 +1,6 @@
 import os
 from datetime import datetime
+from glob import glob
 
 from flask import current_app
 from models.visitor import Visitor, VisitorSession
@@ -166,6 +167,23 @@ class ReportGenerator:
             return snapshot_path
         except Exception:
             return image_path
+
+    def _latest_existing_snapshot(self, visitor_code):
+        snapshots_dir = os.path.join(self.visitor_reports_dir, 'snapshots')
+        if not os.path.isdir(snapshots_dir):
+            return None
+        patterns = [
+            os.path.join(snapshots_dir, f"{visitor_code}_face_shoulder_*.jpg"),
+            os.path.join(snapshots_dir, f"{visitor_code}_face_shoulder.jpg"),
+        ]
+        candidates = []
+        for pattern in patterns:
+            candidates.extend(glob(pattern))
+        candidates = [path for path in candidates if os.path.exists(path)]
+        if not candidates:
+            return None
+        candidates.sort(key=lambda path: os.path.getmtime(path), reverse=True)
+        return candidates[0]
 
     def _build_summary_with_reportlab(self, filepath, title_text, subtitle_text, rows):
         doc = SimpleDocTemplate(filepath, pagesize=A4)
@@ -433,6 +451,8 @@ class ReportGenerator:
                 if visitor is not None:
                     raw_path = self._resolve_visitor_image_path(visitor)
                     snapshot_path = self._prepare_face_to_shoulder_snapshot(raw_path, visitor_code)
+                    if not snapshot_path or not os.path.exists(snapshot_path):
+                        snapshot_path = self._latest_existing_snapshot(visitor_code)
 
                 visitors_payload.append({
                     'visitor_id': visitor_code,
@@ -485,6 +505,8 @@ class ReportGenerator:
         capture_date_text = first_in.strftime('%Y-%m-%d')
         visitor_image_path = self._resolve_visitor_image_path(visitor)
         visitor_image_path = self._prepare_face_to_shoulder_snapshot(visitor_image_path, visitor.visitor_id)
+        if not visitor_image_path or not os.path.exists(visitor_image_path):
+            visitor_image_path = self._latest_existing_snapshot(visitor.visitor_id)
 
         filename = f"{visitor.visitor_id}_report.pdf"
         filepath = os.path.join(self.visitor_reports_dir, filename)

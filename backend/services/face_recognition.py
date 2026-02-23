@@ -252,6 +252,42 @@ class FaceRecognitionService:
         saved = bool(cv2.imwrite(abs_path, crop))
         return rel_path if saved else None
 
+    def _resolve_upload_image_path(self, raw_path: Optional[str]) -> Optional[str]:
+        if not raw_path:
+            return None
+
+        if os.path.isabs(raw_path) and os.path.exists(raw_path):
+            return raw_path
+
+        upload_root = current_app.config.get('UPLOAD_FOLDER')
+        visitor_root = current_app.config.get('VISITOR_UPLOAD_FOLDER')
+        normalized = str(raw_path).replace('\\', '/')
+        if normalized.startswith('/'):
+            normalized = normalized.lstrip('/')
+        if normalized.startswith('static/'):
+            normalized = normalized[len('static/'):]
+        if normalized.startswith('uploads/'):
+            normalized = normalized[len('uploads/'):]
+
+        candidates = []
+        if upload_root:
+            candidates.append(os.path.join(upload_root, normalized))
+        if visitor_root:
+            candidates.append(os.path.join(visitor_root, os.path.basename(normalized)))
+
+        for path in candidates:
+            if path and os.path.exists(path):
+                return path
+        return None
+
+    def _visitor_has_usable_image(self, visitor: Visitor) -> bool:
+        if self._resolve_upload_image_path(visitor.primary_image_path):
+            return True
+        for img in visitor.images or []:
+            if self._resolve_upload_image_path(getattr(img, 'image_path', None)):
+                return True
+        return False
+
     def _match_visitor(self, embedding: np.ndarray, threshold: float):
         best_db_id = None
         best_score = -1.0
@@ -769,6 +805,14 @@ class FaceRecognitionService:
                     track['last_seen'] = now_local
                     track['embedding'] = emb
                 visitor.last_seen = now_local
+
+                # Ensure reports always have a usable source image for face-to-shoulder crop.
+                if not self._visitor_has_usable_image(visitor):
+                    fallback_rel_path = self._save_primary_face_image(frame, current_bbox, visitor.visitor_id)
+                    if fallback_rel_path:
+                        visitor.primary_image_path = fallback_rel_path
+                        db.session.add(VisitorImage(visitor_id=visitor.id, image_path=fallback_rel_path))
+                        changed = True
 
                 if matched_score < 0.98:
                     updated = self._norm((self._embeddings[visitor.id] * 0.85) + (emb * 0.15))
