@@ -39,6 +39,8 @@ class FaceRecognitionService:
         self._next_visitor_num: Optional[int] = None
         self._last_cache_sync = datetime.datetime.min
         self._last_staff_cache_sync = datetime.datetime.min
+        cascade_path = os.path.join(cv2.data.haarcascades, 'haarcascade_frontalface_default.xml')
+        self._fallback_face_cascade = cv2.CascadeClassifier(cascade_path)
 
     @staticmethod
     def _norm(embedding: np.ndarray) -> np.ndarray:
@@ -169,10 +171,12 @@ class FaceRecognitionService:
         self._next_visitor_num += 1
         return visitor_code
 
-    def _upsert_pending_candidate(self, bbox, embedding, now_local):
+    def _upsert_pending_candidate(self, bbox, embedding, now_local, camera_db_id=None):
         best_idx = None
         best_iou = 0.0
         for idx, cand in enumerate(self._pending_candidates):
+            if camera_db_id is not None and cand.get('camera_id') != camera_db_id:
+                continue
             iou = self._iou(cand.get('bbox'), bbox)
             if iou > 0.45 and iou > best_iou:
                 best_iou = iou
@@ -185,6 +189,7 @@ class FaceRecognitionService:
                 'count': 1,
                 'first_seen': now_local,
                 'last_seen': now_local,
+                'camera_id': camera_db_id,
             }
             self._pending_candidates.append(candidate)
             return candidate
@@ -201,10 +206,13 @@ class FaceRecognitionService:
             candidate['embedding'] = embedding
         return candidate
 
-    def _clear_pending_for_bbox(self, bbox):
+    def _clear_pending_for_bbox(self, bbox, camera_db_id=None):
         self._pending_candidates = [
             cand for cand in self._pending_candidates
-            if self._iou(cand.get('bbox'), bbox) <= 0.30
+            if (
+                (camera_db_id is not None and cand.get('camera_id') != camera_db_id)
+                or self._iou(cand.get('bbox'), bbox) <= 0.30
+            )
         ]
 
     def _clear_specific_candidate(self, candidate):
@@ -216,7 +224,7 @@ class FaceRecognitionService:
             if (now_local - cand.get('last_seen', now_local)).total_seconds() <= 2.5
         ]
 
-    def _save_primary_face_image(self, frame, bbox, visitor_code) -> str:
+    def _save_primary_face_image(self, frame, bbox, visitor_code) -> Optional[str]:
         x1, y1, x2, y2 = bbox
         h, w = frame.shape[:2]
         face_w = max(1, x2 - x1)
@@ -232,12 +240,17 @@ class FaceRecognitionService:
         ny2 = min(h, y2 + expand_y_bottom)
 
         crop = frame[ny1:ny2, nx1:nx2]
-        filename = f"{visitor_code}_{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}.jpg"
+        if crop.size == 0:
+            crop = frame[y1:y2, x1:x2]
+        if crop.size == 0:
+            return None
+
+        filename = f"{visitor_code}_{datetime.datetime.now().strftime('%Y%m%d%H%M%S%f')}.jpg"
         rel_path = os.path.join('visitors', filename)
         abs_path = os.path.join(current_app.config['UPLOAD_FOLDER'], rel_path)
         os.makedirs(os.path.dirname(abs_path), exist_ok=True)
-        cv2.imwrite(abs_path, crop)
-        return rel_path
+        saved = bool(cv2.imwrite(abs_path, crop))
+        return rel_path if saved else None
 
     def _match_visitor(self, embedding: np.ndarray, threshold: float):
         best_db_id = None
@@ -250,6 +263,86 @@ class FaceRecognitionService:
         if best_db_id is not None and best_score >= threshold:
             return best_db_id, best_score
         return None, best_score
+
+    def _match_recent_active_track(
+        self,
+        embedding: np.ndarray,
+        bbox,
+        now_local: datetime.datetime,
+        camera_db_id: Optional[int],
+        base_threshold: float,
+    ):
+        best_db_id = None
+        best_score = -1.0
+        best_rank = -1.0
+        similarity_floor = max(0.30, float(base_threshold) - 0.14)
+        for visitor_db_id, track in self._active_tracks.items():
+            if camera_db_id is not None and track.get('camera_id') != camera_db_id:
+                continue
+
+            track_last_seen = track.get('last_seen', now_local)
+            if (now_local - track_last_seen).total_seconds() > 4.0:
+                continue
+
+            reference_embedding = track.get('embedding') or self._embeddings.get(visitor_db_id)
+            if reference_embedding is None:
+                continue
+
+            similarity = float(np.dot(embedding, reference_embedding))
+            track_bbox = track.get('bbox')
+            iou = self._iou(track_bbox, bbox) if track_bbox is not None else 0.0
+
+            if similarity < similarity_floor and not (iou >= 0.45 and similarity >= 0.24):
+                continue
+
+            rank = (similarity * 1.0) + (iou * 0.20)
+            if rank > best_rank:
+                best_rank = rank
+                best_score = similarity
+                best_db_id = visitor_db_id
+
+        if best_db_id is not None:
+            return best_db_id, best_score
+        return None, best_score
+
+    def _detect_faces(self, frame):
+        faces = self.app.get(frame)
+        if faces:
+            return faces
+        try:
+            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            faces = self.app.get(rgb)
+            if faces:
+                return faces
+        except Exception:
+            pass
+        return []
+
+    def _draw_fallback_face_boxes(self, frame):
+        cascade = self._fallback_face_cascade
+        if cascade is None or cascade.empty():
+            return 0
+        try:
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            detections = cascade.detectMultiScale(gray, scaleFactor=1.15, minNeighbors=5, minSize=(50, 50))
+        except Exception:
+            return 0
+
+        count = 0
+        for (x, y, w, h) in detections:
+            count += 1
+            bbox = (int(x), int(y), int(x + w), int(y + h))
+            self._draw_papp_style_box(
+                frame,
+                bbox,
+                "Face",
+                (0, 215, 255),
+                thickness=1,
+                font_scale=0.5,
+                text_thickness=1,
+                y_offset=0,
+            )
+        return count
 
     def _ensure_active_session(
         self,
@@ -282,6 +375,7 @@ class FaceRecognitionService:
             'bbox': None,
             'session_id': active_session.id,
             'camera_id': camera_db_id,
+            'embedding': self._embeddings.get(visitor.id),
         }
         return active_session.id
 
@@ -439,14 +533,15 @@ class FaceRecognitionService:
         if is_browser_camera:
             # Browser/device cameras (phone/laptop) are often noisier and lower detail;
             # relax validation gates so detection remains practical in live sessions.
-            conf_threshold = min(conf_threshold, 0.30)
+            conf_threshold = min(conf_threshold, 0.20)
+            similarity_threshold = min(similarity_threshold, 0.43)
             blur_threshold = min(blur_threshold, 22.0)
-            min_face_area = min(min_face_area, 5000)
+            min_face_area = min(min_face_area, 2600)
             tilt_threshold = max(tilt_threshold, 0.45)
 
         event_start = event_context.get('start_time') if event_context else None
         event_end = event_context.get('end_time') if event_context else None
-        faces = self.app.get(frame)
+        faces = self._detect_faces(frame)
         valid_db_ids = set()
         invalid_bboxes = []
         changed = False
@@ -474,7 +569,16 @@ class FaceRecognitionService:
             if score < conf_threshold:
                 invalid_bboxes.append(current_bbox)
                 stats['rejected_faces'] += 1
-                # P_app.py behavior: skip low-confidence detections without drawing.
+                self._draw_papp_style_box(
+                    frame,
+                    current_bbox,
+                    "Low Conf",
+                    (0, 165, 255),
+                    thickness=1,
+                    font_scale=0.5,
+                    text_thickness=1,
+                    y_offset=0,
+                )
                 continue
 
             face_area = (x2 - x1) * (y2 - y1)
@@ -546,7 +650,7 @@ class FaceRecognitionService:
                 with_score=True,
             )
             if matched_staff is not None:
-                self._clear_pending_for_bbox(current_bbox)
+                self._clear_pending_for_bbox(current_bbox, camera_db_id=camera_db_id)
                 stats['staff_matches'] += 1
                 staff_role = (matched_staff.position or matched_staff.department or 'Staff').strip()
                 label = f"{matched_staff.staff_id} [{staff_role}] {staff_score:.2f}"
@@ -555,14 +659,22 @@ class FaceRecognitionService:
                 continue
 
             matched_db_id, matched_score = self._match_visitor(emb, similarity_threshold)
+            if matched_db_id is None:
+                matched_db_id, matched_score = self._match_recent_active_track(
+                    emb,
+                    current_bbox,
+                    now_local,
+                    camera_db_id,
+                    base_threshold=similarity_threshold,
+                )
             label = "Unknown"
             color = (0, 255, 255)
 
             if matched_db_id is None:
-                candidate = self._upsert_pending_candidate(current_bbox, emb, now_local)
+                candidate = self._upsert_pending_candidate(current_bbox, emb, now_local, camera_db_id=camera_db_id)
                 min_frames = max(1, int(cfg.get('UNKNOWN_FACE_MIN_FRAMES', 3)))
                 if is_browser_camera:
-                    min_frames = min(min_frames, 1)
+                    min_frames = max(2, min_frames)
                 if int(candidate.get('count', 0)) < min_frames:
                     color = (0, 200, 255)
                     self._draw_papp_style_box(frame, current_bbox, "Analyzing...", color, thickness=2, font_scale=0.6, text_thickness=2, y_offset=-10)
@@ -583,7 +695,8 @@ class FaceRecognitionService:
                 db.session.add(visitor)
                 db.session.flush()
 
-                db.session.add(VisitorImage(visitor_id=visitor.id, image_path=image_rel_path))
+                if image_rel_path:
+                    db.session.add(VisitorImage(visitor_id=visitor.id, image_path=image_rel_path))
                 session = VisitorSession(
                     visitor_id=visitor.id,
                     camera_id=camera_db_id,
@@ -600,6 +713,7 @@ class FaceRecognitionService:
                     'bbox': current_bbox,
                     'session_id': session.id,
                     'camera_id': camera_db_id,
+                    'embedding': stable_embedding,
                 }
                 valid_db_ids.add(visitor.id)
                 stats['new_visitors'] += 1
@@ -610,13 +724,14 @@ class FaceRecognitionService:
                 visitor = Visitor.query.get(matched_db_id)
                 if visitor is None:
                     continue
-                self._clear_pending_for_bbox(current_bbox)
+                self._clear_pending_for_bbox(current_bbox, camera_db_id=camera_db_id)
 
                 self._ensure_active_session(visitor, camera_db_id, now_local, event_start=event_start)
                 track = self._active_tracks.get(visitor.id)
                 if track is not None:
                     track['bbox'] = current_bbox
                     track['last_seen'] = now_local
+                    track['embedding'] = emb
                 visitor.last_seen = now_local
 
                 if matched_score < 0.98:
@@ -641,6 +756,10 @@ class FaceRecognitionService:
             camera_db_id=camera_db_id,
         ):
             changed = True
+
+        if not faces:
+            fallback_count = self._draw_fallback_face_boxes(frame)
+            stats['faces_detected'] = max(int(stats.get('faces_detected', 0)), int(fallback_count))
 
         self._purge_pending_candidates(now_local)
 

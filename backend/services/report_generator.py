@@ -10,7 +10,7 @@ try:
     from reportlab.lib import colors
     from reportlab.lib.pagesizes import A4
     from reportlab.lib.styles import getSampleStyleSheet
-    from reportlab.platypus import Image, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+    from reportlab.platypus import Image, PageBreak, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
     REPORTLAB_AVAILABLE = True
 except ModuleNotFoundError:
@@ -61,8 +61,7 @@ class ReportGenerator:
 
     def _resolve_visitor_image_path(self, visitor):
         upload_root = current_app.config.get('UPLOAD_FOLDER')
-        if not upload_root:
-            return None
+        visitor_root = current_app.config.get('VISITOR_UPLOAD_FOLDER')
 
         candidates = []
         if visitor.primary_image_path:
@@ -74,10 +73,32 @@ class ReportGenerator:
             if item.image_path:
                 candidates.append(item.image_path)
 
-        for rel_path in candidates:
-            abs_path = os.path.join(upload_root, rel_path)
-            if os.path.exists(abs_path):
-                return abs_path
+        for raw_path in candidates:
+            if not raw_path:
+                continue
+
+            # Support absolute file path records directly.
+            if os.path.isabs(raw_path) and os.path.exists(raw_path):
+                return raw_path
+
+            normalized = raw_path.replace('\\', '/')
+            if normalized.startswith('/'):
+                normalized = normalized.lstrip('/')
+            if normalized.startswith('static/'):
+                normalized = normalized[len('static/'):]
+            if normalized.startswith('uploads/'):
+                normalized = normalized[len('uploads/'):]
+
+            possible_paths = []
+            if upload_root:
+                possible_paths.append(os.path.join(upload_root, normalized))
+            if visitor_root:
+                possible_paths.append(os.path.join(visitor_root, os.path.basename(normalized)))
+            possible_paths.append(os.path.join(self.visitor_reports_dir, 'snapshots', os.path.basename(normalized)))
+
+            for abs_path in possible_paths:
+                if abs_path and os.path.exists(abs_path):
+                    return abs_path
         return None
 
     def _prepare_face_to_shoulder_snapshot(self, image_path, visitor_code):
@@ -100,7 +121,26 @@ class ReportGenerator:
                 minSize=(48, 48),
             )
             if len(faces) == 0:
-                return image_path
+                # Fallback crop when detector misses: centered portrait crop.
+                img_h, img_w = img.shape[:2]
+                crop_w = int(img_w * 0.64)
+                crop_h = int(img_h * 0.82)
+                nx1 = max(0, (img_w - crop_w) // 2)
+                ny1 = max(0, int(img_h * 0.04))
+                nx2 = min(img_w, nx1 + crop_w)
+                ny2 = min(img_h, ny1 + crop_h)
+                crop = img[ny1:ny2, nx1:nx2]
+                if crop.size == 0:
+                    return image_path
+
+                snapshots_dir = os.path.join(self.visitor_reports_dir, 'snapshots')
+                os.makedirs(snapshots_dir, exist_ok=True)
+                snapshot_path = os.path.join(
+                    snapshots_dir,
+                    f"{visitor_code}_face_shoulder_{datetime.now().strftime('%Y%m%d%H%M%S')}.jpg",
+                )
+                cv2.imwrite(snapshot_path, crop)
+                return snapshot_path
 
             x, y, w, h = max(faces, key=lambda face: face[2] * face[3])
             img_h, img_w = img.shape[:2]
@@ -118,7 +158,10 @@ class ReportGenerator:
 
             snapshots_dir = os.path.join(self.visitor_reports_dir, 'snapshots')
             os.makedirs(snapshots_dir, exist_ok=True)
-            snapshot_path = os.path.join(snapshots_dir, f"{visitor_code}_face_shoulder.jpg")
+            snapshot_path = os.path.join(
+                snapshots_dir,
+                f"{visitor_code}_face_shoulder_{datetime.now().strftime('%Y%m%d%H%M%S')}.jpg",
+            )
             cv2.imwrite(snapshot_path, crop)
             return snapshot_path
         except Exception:
@@ -169,6 +212,98 @@ class ReportGenerator:
             for cell in row:
                 pdf.cell(col_width, 8, self._safe_text(cell), border=1, ln=0)
             pdf.ln(8)
+
+        pdf.output(filepath)
+
+    def _build_event_visitors_with_reportlab(self, filepath, title_text, subtitle_text, visitors_payload):
+        doc = SimpleDocTemplate(filepath, pagesize=A4)
+        styles = getSampleStyleSheet()
+        elements = []
+
+        elements.append(Paragraph(title_text, styles['Title']))
+        elements.append(Paragraph(subtitle_text, styles['Normal']))
+        elements.append(Spacer(1, 12))
+
+        if not visitors_payload:
+            elements.append(Paragraph("No visitors found in selected window.", styles['Normal']))
+            doc.build(elements)
+            return
+
+        for idx, visitor_item in enumerate(visitors_payload):
+            elements.append(Paragraph(f"Visitor: {visitor_item['visitor_id']}", styles['Heading2']))
+            table = Table([
+                ['Date', visitor_item['date']],
+                ['First In Time', visitor_item['first_in']],
+                ['Last Out Time', visitor_item['last_out']],
+                ['Total Duration', visitor_item['duration']],
+            ], colWidths=[150, 280])
+            table.setStyle(TableStyle([
+                ('BACKGROUND', (0, 0), (0, -1), colors.lightgrey),
+                ('FONTNAME', (0, 0), (-1, -1), 'Helvetica'),
+                ('FONTNAME', (0, 0), (0, -1), 'Helvetica-Bold'),
+                ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
+                ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+                ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+                ('ROWBACKGROUNDS', (0, 0), (-1, -1), [colors.whitesmoke, colors.beige]),
+            ]))
+            elements.append(table)
+            elements.append(Spacer(1, 10))
+
+            image_path = visitor_item.get('snapshot_path')
+            if image_path and os.path.exists(image_path):
+                elements.append(Paragraph("Visitor Snapshot (Face to Shoulder)", styles['Heading3']))
+                elements.append(Spacer(1, 6))
+                elements.append(Image(image_path, width=180, height=230))
+                elements.append(Spacer(1, 8))
+
+            if idx < len(visitors_payload) - 1:
+                elements.append(PageBreak())
+
+        doc.build(elements)
+
+    def _build_event_visitors_with_fpdf(self, filepath, title_text, subtitle_text, visitors_payload):
+        pdf = FPDF()
+        pdf.set_auto_page_break(auto=True, margin=12)
+        pdf.add_page()
+        pdf.set_font('Arial', 'B', 16)
+        pdf.cell(0, 10, self._safe_text(title_text), ln=1)
+        pdf.set_font('Arial', '', 11)
+        pdf.cell(0, 8, self._safe_text(subtitle_text), ln=1)
+
+        if not visitors_payload:
+            pdf.ln(6)
+            pdf.set_font('Arial', '', 11)
+            pdf.cell(0, 8, 'No visitors found in selected window.', ln=1)
+            pdf.output(filepath)
+            return
+
+        for idx, visitor_item in enumerate(visitors_payload):
+            if idx > 0:
+                pdf.add_page()
+            pdf.ln(4)
+            pdf.set_font('Arial', 'B', 13)
+            pdf.cell(0, 8, self._safe_text(f"Visitor: {visitor_item['visitor_id']}"), ln=1)
+
+            pdf.set_font('Arial', 'B', 10)
+            rows = [
+                ('Date', visitor_item['date']),
+                ('First In Time', visitor_item['first_in']),
+                ('Last Out Time', visitor_item['last_out']),
+                ('Total Duration', visitor_item['duration']),
+            ]
+            for key, value in rows:
+                pdf.cell(48, 8, self._safe_text(key), border=1)
+                pdf.cell(132, 8, self._safe_text(value), border=1, ln=1)
+
+            image_path = visitor_item.get('snapshot_path')
+            if image_path and os.path.exists(image_path):
+                pdf.ln(8)
+                pdf.set_font('Arial', 'B', 11)
+                pdf.cell(0, 8, 'Visitor Snapshot (Face to Shoulder)', ln=1)
+                try:
+                    pdf.image(image_path, w=62)
+                except Exception:
+                    pass
 
         pdf.output(filepath)
 
@@ -285,30 +420,36 @@ class ReportGenerator:
             if item['last_out'] is None or end > item['last_out']:
                 item['last_out'] = end
 
-        data = [['Visitor ID', 'First In', 'Last Out', 'Duration', 'Sessions']]
-        if not grouped:
-            data.append(['-', 'No records found', '-', '-', '-'])
-        else:
+        visitors_payload = []
+        if grouped:
             visitors = Visitor.query.filter(Visitor.id.in_(grouped.keys())).all()
             visitors_by_id = {v.id: v for v in visitors}
             for visitor_db_id, summary in grouped.items():
                 visitor = visitors_by_id.get(visitor_db_id)
                 visitor_code = visitor.visitor_id if visitor else f'VISITOR-{visitor_db_id}'
-                row = [
-                    visitor_code,
-                    summary['first_in'].strftime('%Y-%m-%d %H:%M:%S') if summary['first_in'] else '-',
-                    summary['last_out'].strftime('%Y-%m-%d %H:%M:%S') if summary['last_out'] else '-',
-                    self._format_duration(summary['duration']),
-                    str(summary['sessions']),
-                ]
-                data.append(row)
-        
+                first_in = summary['first_in']
+                last_out = summary['last_out']
+                snapshot_path = None
+                if visitor is not None:
+                    raw_path = self._resolve_visitor_image_path(visitor)
+                    snapshot_path = self._prepare_face_to_shoulder_snapshot(raw_path, visitor_code)
+
+                visitors_payload.append({
+                    'visitor_id': visitor_code,
+                    'date': first_in.strftime('%Y-%m-%d') if first_in else '-',
+                    'first_in': first_in.strftime('%Y-%m-%d %H:%M:%S') if first_in else '-',
+                    'last_out': last_out.strftime('%Y-%m-%d %H:%M:%S') if last_out else '-',
+                    'duration': self._format_duration(summary['duration']),
+                    'snapshot_path': snapshot_path,
+                })
+
+        visitors_payload.sort(key=lambda item: item['first_in'])
         title_text = f"Visitor Report ({report_type.title()})"
         subtitle_text = f"Period: {start_date} to {end_date}"
         if REPORTLAB_AVAILABLE:
-            self._build_summary_with_reportlab(filepath, title_text, subtitle_text, data)
+            self._build_event_visitors_with_reportlab(filepath, title_text, subtitle_text, visitors_payload)
         else:
-            self._build_summary_with_fpdf(filepath, title_text, subtitle_text, data)
+            self._build_event_visitors_with_fpdf(filepath, title_text, subtitle_text, visitors_payload)
 
         return filepath
 

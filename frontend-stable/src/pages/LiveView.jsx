@@ -187,6 +187,12 @@ export default function LiveView() {
       if (statusCode === 500) {
         return 'Backend failed to process frame. Check backend logs and model dependencies.';
       }
+      if (err?.message) {
+        const compact = String(err.message).replace(/\s+/g, ' ').trim();
+        if (compact) {
+          return compact.slice(0, 240);
+        }
+      }
       return 'Failed to process device camera frame. Verify backend reachability and event state.';
     };
 
@@ -249,6 +255,18 @@ export default function LiveView() {
           responseType: 'blob',
           timeout: hasRenderedFrame ? 30000 : 90000,
         });
+
+        const contentType = String(response?.headers?.['content-type'] || '').toLowerCase();
+        if (!contentType.includes('image/')) {
+          let text = '';
+          try {
+            text = await response.data.text();
+          } catch (_) {
+            text = '';
+          }
+          const compact = String(text || '').replace(/\s+/g, ' ').trim();
+          throw new Error(compact || 'Backend returned non-image response while processing camera frame.');
+        }
 
         if (!cancelled) {
           const nextUrl = URL.createObjectURL(response.data);

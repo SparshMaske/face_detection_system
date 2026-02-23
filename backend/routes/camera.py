@@ -217,9 +217,9 @@ def process_client_frame():
         cv2.putText(
             frame,
             info_text,
-            (16, max(24, frame.shape[0] - 18)),
+            (16, 28),
             cv2.FONT_HERSHEY_SIMPLEX,
-            0.55,
+            0.65,
             info_color,
             2,
         )
