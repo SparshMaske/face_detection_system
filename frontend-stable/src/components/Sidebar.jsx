@@ -3,6 +3,7 @@ import { NavLink } from 'react-router-dom';
 export default function Sidebar({ mobileOpen = false, onClose, onNavigate }) {
   const navItems = [
     { path: '/event-scheduler', label: 'Event Scheduler', code: 'EV' },
+    { path: '/event-management', label: 'Event Management', code: 'EM' },
     { path: '/dashboard', label: 'Dashboard', code: 'DB' },
     { path: '/live', label: 'Live View', code: 'LV' },
     { path: '/staff', label: 'Staff Management', code: 'ST' },

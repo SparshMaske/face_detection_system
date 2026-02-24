@@ -24,6 +24,7 @@ import Reports from './pages/Reports';
 import Analytics from './pages/Analytics';
 import Settings from './pages/Settings';
 import EventScheduler from './pages/EventScheduler';
+import EventManagement from './pages/EventManagement';
 
 // Protected Route Wrapper
 const ProtectedRoute = () => {
@@ -48,6 +49,7 @@ function App() {
               <Route path="/" element={<Layout />}>
                 <Route index element={<Navigate to="/event-scheduler" replace />} />
                 <Route path="event-scheduler" element={<EventScheduler />} />
+                <Route path="event-management" element={<EventManagement />} />
                 <Route path="dashboard" element={<Dashboard />} />
                 <Route path="live" element={<LiveView />} />
                 <Route path="staff" element={<StaffManagement />} />
