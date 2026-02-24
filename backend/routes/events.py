@@ -765,9 +765,7 @@ def export_completed_event_csv(event_id):
         item = grouped.setdefault(session.visitor_id, {
             'first_in': None,
             'last_out': None,
-            'duration_seconds': 0,
         })
-        item['duration_seconds'] += max(0, int((overlap_end - overlap_start).total_seconds()))
         if item['first_in'] is None or overlap_start < item['first_in']:
             item['first_in'] = overlap_start
         if item['last_out'] is None or overlap_end > item['last_out']:
@@ -797,7 +795,10 @@ def export_completed_event_csv(event_id):
         visitor_code = visitor.visitor_id if visitor else f'VISITOR-{visitor_db_id}'
         first_in = summary.get('first_in')
         last_out = summary.get('last_out')
-        duration_text = _format_duration(summary.get('duration_seconds', 0))
+        duration_seconds = 0
+        if first_in and last_out:
+            duration_seconds = max(0, int((last_out - first_in).total_seconds()))
+        duration_text = _format_duration(duration_seconds)
 
         pdf_filename = f"{visitor_code}_report.pdf"
         pdf_path = os.path.join(reports_root, pdf_filename)

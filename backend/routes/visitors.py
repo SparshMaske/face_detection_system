@@ -31,7 +31,6 @@ def _event_window_summary(visitor, windows):
 
     first_seen = None
     last_seen = None
-    duration_seconds = 0
     visit_count = 0
     counted_sessions = set()
     now_local = datetime.now()
@@ -46,7 +45,6 @@ def _event_window_summary(visitor, windows):
             if session.id not in counted_sessions:
                 counted_sessions.add(session.id)
                 visit_count += 1
-            duration_seconds += (overlap_end - overlap_start).total_seconds()
             if first_seen is None or overlap_start < first_seen:
                 first_seen = overlap_start
             if last_seen is None or overlap_end > last_seen:
@@ -55,11 +53,13 @@ def _event_window_summary(visitor, windows):
     if first_seen is None or last_seen is None:
         return None
 
+    duration_seconds = max(0, int((last_seen - first_seen).total_seconds()))
+
     return {
         'first_seen': first_seen,
         'last_seen': last_seen,
         'visit_count': visit_count,
-        'duration_seconds': int(duration_seconds),
+        'duration_seconds': duration_seconds,
         'duration_formatted': _format_duration(duration_seconds),
     }
 

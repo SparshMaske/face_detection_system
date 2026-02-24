@@ -422,11 +422,9 @@ class ReportGenerator:
             item = grouped.setdefault(visitor_id, {
                 'first_in': None,
                 'last_out': None,
-                'duration': 0,
                 'sessions': 0,
             })
             item['sessions'] += 1
-            item['duration'] += (end - start).total_seconds()
             if item['first_in'] is None or start < item['first_in']:
                 item['first_in'] = start
             if item['last_out'] is None or end > item['last_out']:
@@ -447,13 +445,16 @@ class ReportGenerator:
                     snapshot_path = self._prepare_face_to_shoulder_snapshot(raw_path, visitor_code)
                     if not snapshot_path or not os.path.exists(snapshot_path):
                         snapshot_path = self._latest_existing_snapshot(visitor_code)
+                duration_seconds = 0
+                if first_in and last_out:
+                    duration_seconds = max(0, int((last_out - first_in).total_seconds()))
 
                 visitors_payload.append({
                     'visitor_id': visitor_code,
                     'date': first_in.strftime('%Y-%m-%d') if first_in else '-',
                     'first_in': first_in.strftime('%Y-%m-%d %H:%M:%S') if first_in else '-',
                     'last_out': last_out.strftime('%Y-%m-%d %H:%M:%S') if last_out else '-',
-                    'duration': self._format_duration(summary['duration']),
+                    'duration': self._format_duration(duration_seconds),
                     'snapshot_path': snapshot_path,
                 })
 
@@ -494,7 +495,7 @@ class ReportGenerator:
 
         first_in = min(item[0] for item in normalized_sessions)
         last_out = max(item[1] for item in normalized_sessions)
-        duration_seconds = sum(max(0, int((out - inn).total_seconds())) for inn, out, _ in normalized_sessions)
+        duration_seconds = max(0, int((last_out - first_in).total_seconds()))
         duration_text = self._format_duration(duration_seconds)
         capture_date_text = first_in.strftime('%Y-%m-%d')
         visitor_image_path = self._resolve_visitor_image_path(visitor)

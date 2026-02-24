@@ -30,6 +30,66 @@ class AnalyticsService:
             )
             for start_time, end_time in windows
         ])
+
+    @staticmethod
+    def _build_visitor_spans(start_date=None, end_date=None, windows=None):
+        now_local = datetime.utcnow()
+        spans = {}
+
+        if windows:
+            overlap_filters = [
+                and_(
+                    VisitorSession.entry_time <= window_end,
+                    or_(VisitorSession.exit_time.is_(None), VisitorSession.exit_time >= window_start)
+                )
+                for window_start, window_end in windows
+            ]
+            sessions = VisitorSession.query.filter(or_(*overlap_filters)).all()
+
+            for session in sessions:
+                for window_start, window_end in windows:
+                    overlap_start = max(session.entry_time, window_start)
+                    overlap_end = min(session.exit_time or now_local, window_end)
+                    if overlap_end < overlap_start:
+                        continue
+                    current = spans.setdefault(session.visitor_id, {'first_in': None, 'last_out': None})
+                    if current['first_in'] is None or overlap_start < current['first_in']:
+                        current['first_in'] = overlap_start
+                    if current['last_out'] is None or overlap_end > current['last_out']:
+                        current['last_out'] = overlap_end
+            return spans
+
+        window_end = end_date or now_local
+        query = VisitorSession.query.filter(VisitorSession.entry_time <= window_end)
+        if start_date is not None:
+            query = query.filter(or_(VisitorSession.exit_time.is_(None), VisitorSession.exit_time >= start_date))
+
+        sessions = query.all()
+        for session in sessions:
+            overlap_start = session.entry_time if start_date is None else max(session.entry_time, start_date)
+            overlap_end = min(session.exit_time or now_local, window_end)
+            if overlap_end < overlap_start:
+                continue
+
+            current = spans.setdefault(session.visitor_id, {'first_in': None, 'last_out': None})
+            if current['first_in'] is None or overlap_start < current['first_in']:
+                current['first_in'] = overlap_start
+            if current['last_out'] is None or overlap_end > current['last_out']:
+                current['last_out'] = overlap_end
+        return spans
+
+    @staticmethod
+    def _average_duration_from_spans(spans):
+        durations = []
+        for item in spans.values():
+            first_in = item.get('first_in')
+            last_out = item.get('last_out')
+            if not first_in or not last_out:
+                continue
+            durations.append(max(0, (last_out - first_in).total_seconds()))
+        if not durations:
+            return 0
+        return sum(durations) / len(durations)
     
     def get_footfall_trends(self, days=7):
         end_date = datetime.utcnow()
@@ -66,18 +126,9 @@ class AnalyticsService:
         return [{'hour': int(r.hour), 'count': r.count} for r in results]
 
     def get_average_duration(self):
-        query = db.session.query(
-            func.avg(
-                func.extract('epoch', VisitorSession.exit_time) - 
-                func.extract('epoch', VisitorSession.entry_time)
-            )
-        ).filter(VisitorSession.exit_time.isnot(None))
-        event_filter = self._window_filter()
-        if event_filter is not None:
-            query = query.filter(event_filter)
-        results = query.first()
-        
-        avg_seconds = results[0] if results else 0
+        windows = self._event_windows()
+        spans = self._build_visitor_spans(windows=windows if windows else None)
+        avg_seconds = self._average_duration_from_spans(spans)
         return {
             'average_seconds': avg_seconds,
             'average_minutes': avg_seconds / 60.0 if avg_seconds else 0
@@ -95,18 +146,12 @@ class AnalyticsService:
             total_visitors_q = total_visitors_q.filter(VisitorSession.entry_time >= start_date)
         total_sessions = total_visitors_q.count()
         
-        avg_q = db.session.query(
-            func.avg(
-                func.extract('epoch', VisitorSession.exit_time) - 
-                func.extract('epoch', VisitorSession.entry_time)
-            )
-        ).filter(VisitorSession.exit_time.isnot(None))
-        if event_filter is not None:
-            avg_q = avg_q.filter(event_filter)
+        windows = self._event_windows()
+        if windows:
+            visitor_spans = self._build_visitor_spans(windows=windows)
         else:
-            avg_q = avg_q.filter(VisitorSession.entry_time >= start_date)
-        avg_res = avg_q.first()
-        avg_seconds = avg_res[0] if avg_res else 0
+            visitor_spans = self._build_visitor_spans(start_date=start_date, end_date=end_date)
+        avg_seconds = self._average_duration_from_spans(visitor_spans)
 
         peak_day_q = db.session.query(
             func.date(VisitorSession.entry_time).label('date'),
