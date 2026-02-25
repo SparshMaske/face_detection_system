@@ -26,6 +26,7 @@ export default function EventManagement() {
   const [completedEvents, setCompletedEvents] = useState([]);
   const [busyDeleteId, setBusyDeleteId] = useState('');
   const [busyDownloadId, setBusyDownloadId] = useState('');
+  const [completedSearch, setCompletedSearch] = useState('');
 
   const fetchManagement = useCallback(async () => {
     try {
@@ -52,6 +53,18 @@ export default function EventManagement() {
   }, [fetchManagement]);
 
   const schedulingLocked = useMemo(() => activeEvents.length > 0, [activeEvents.length]);
+  const filteredCompletedEvents = useMemo(() => {
+    const query = String(completedSearch || '').trim().toLowerCase();
+    if (!query) {
+      return completedEvents;
+    }
+    return completedEvents.filter((item) => {
+      const eventName = String(item?.event_name || '').toLowerCase();
+      const eventId = String(item?.event_id || '').toLowerCase();
+      const cameraId = String(item?.selected_camera_id || '').toLowerCase();
+      return eventName.includes(query) || eventId.includes(query) || cameraId.includes(query);
+    });
+  }, [completedEvents, completedSearch]);
 
   const handleDeleteScheduled = async (eventId) => {
     if (!eventId) return;
@@ -177,8 +190,19 @@ export default function EventManagement() {
       </Card>
 
       <Card title="Completed Events">
+        <div className="mb-3">
+          <input
+            type="text"
+            className="input"
+            placeholder="Search completed event by name, event ID, or camera ID"
+            value={completedSearch}
+            onChange={(e) => setCompletedSearch(e.target.value)}
+          />
+        </div>
         {completedEvents.length === 0 ? (
           <div className="text-sm text-gray-600">No completed events yet.</div>
+        ) : filteredCompletedEvents.length === 0 ? (
+          <div className="text-sm text-gray-600">No completed events match your search.</div>
         ) : (
           <div className="table-wrap">
             <table className="table">
@@ -191,7 +215,7 @@ export default function EventManagement() {
                 </tr>
               </thead>
               <tbody>
-                {completedEvents.map((eventItem) => (
+                {filteredCompletedEvents.map((eventItem) => (
                   <tr key={eventItem.event_id}>
                     <td>{eventItem.event_name || 'Untitled Event'}</td>
                     <td>{fmtWindow(eventItem)}</td>

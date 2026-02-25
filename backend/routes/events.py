@@ -168,38 +168,46 @@ def _load_event_registry() -> List[Dict]:
                 records = payload
         except Exception:
             records = []
-    elif _load_event_history():
-        now = _now()
-        for item in _load_event_history():
-            start_dt = _parse_datetime_optional(item.get('start_time'))
-            end_dt = _parse_datetime_optional(item.get('end_time'))
-            if not start_dt or not end_dt:
-                continue
-            status = 'completed' if now > end_dt else 'scheduled'
-            seeded = _normalize_event_record({
-                'event_id': item.get('event_id') or _make_event_id(),
-                'event_name': item.get('event_name') or '',
-                'start_time': start_dt.isoformat(),
-                'end_time': end_dt.isoformat(),
-                'camera_mode': item.get('camera_mode'),
-                'selected_camera_id': item.get('selected_camera_id'),
-                'rtsp_url': item.get('rtsp_url'),
-                'status': status,
-                'manual_stop': status == 'completed',
-                'created_at': item.get('created_at') or now.isoformat(),
-                'updated_at': now.isoformat(),
-                'completed_at': end_dt.isoformat() if status == 'completed' else None,
-            })
-            if seeded:
-                records.append(seeded)
-        _save_event_registry(records)
-
+    now = _now()
     normalized = []
     for record in records:
         item = _normalize_event_record(record)
         if item:
             normalized.append(item)
+
+    # Always merge missing items from history so completed events remain available
+    # after logout/relogin or registry partial loss.
+    known_ids = {item.get('event_id') for item in normalized if item.get('event_id')}
+    for item in _load_event_history():
+        start_dt = _parse_datetime_optional(item.get('start_time'))
+        end_dt = _parse_datetime_optional(item.get('end_time'))
+        if not start_dt or not end_dt:
+            continue
+        history_event_id = (item.get('event_id') or '').strip()
+        if history_event_id and history_event_id in known_ids:
+            continue
+
+        status = 'completed' if now > end_dt else 'scheduled'
+        seeded = _normalize_event_record({
+            'event_id': history_event_id or _make_event_id(),
+            'event_name': item.get('event_name') or '',
+            'start_time': start_dt.isoformat(),
+            'end_time': end_dt.isoformat(),
+            'camera_mode': item.get('camera_mode'),
+            'selected_camera_id': item.get('selected_camera_id'),
+            'rtsp_url': item.get('rtsp_url'),
+            'status': status,
+            'manual_stop': status == 'completed',
+            'created_at': item.get('created_at') or now.isoformat(),
+            'updated_at': now.isoformat(),
+            'completed_at': end_dt.isoformat() if status == 'completed' else None,
+        })
+        if seeded:
+            normalized.append(seeded)
+            known_ids.add(seeded.get('event_id'))
+
     normalized.sort(key=lambda rec: (rec.get('start_time') or '', rec.get('created_at') or ''))
+    _save_event_registry(normalized)
     return normalized
 
 
