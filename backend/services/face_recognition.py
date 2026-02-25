@@ -43,6 +43,8 @@ class FaceRecognitionService:
         self._active_event_key: Optional[str] = None
         self._event_visitor_ids: Set[int] = set()
         self._event_embedding_history: Dict[int, List[np.ndarray]] = {}
+        self._event_display_ids: Dict[int, str] = {}
+        self._event_next_display_num: int = 1
         cascade_path = os.path.join(cv2.data.haarcascades, 'haarcascade_frontalface_default.xml')
         self._fallback_face_cascade = cv2.CascadeClassifier(cascade_path)
 
@@ -109,6 +111,17 @@ class FaceRecognitionService:
         desired_y = y1 + int(y_offset)
         if desired_y < 16:
             desired_y = y1 + 16
+        ((text_w, text_h), text_baseline) = cv2.getTextSize(
+            str(label),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            float(font_scale),
+            max(1, int(text_thickness)),
+        )
+        bg_x1 = max(0, text_x - 2)
+        bg_y1 = max(0, desired_y - text_h - 4)
+        bg_x2 = min(frame.shape[1] - 1, text_x + text_w + 4)
+        bg_y2 = min(frame.shape[0] - 1, desired_y + text_baseline + 2)
+        cv2.rectangle(frame, (bg_x1, bg_y1), (bg_x2, bg_y2), (0, 0, 0), -1)
         cv2.putText(
             frame,
             label,
@@ -338,13 +351,15 @@ class FaceRecognitionService:
 
         self._event_visitor_ids = set()
         self._event_embedding_history = {}
+        self._event_display_ids = {}
+        self._event_next_display_num = 1
         if not event_start or not event_end:
             return
 
         session_rows = VisitorSession.query.filter(
             VisitorSession.entry_time <= event_end,
             or_(VisitorSession.exit_time.is_(None), VisitorSession.exit_time >= event_start),
-        ).all()
+        ).order_by(VisitorSession.entry_time.asc(), VisitorSession.id.asc()).all()
 
         visitor_ids = {row.visitor_id for row in session_rows if row.visitor_id}
         if not visitor_ids:
@@ -358,6 +373,19 @@ class FaceRecognitionService:
                 continue
             self._event_visitor_ids.add(visitor.id)
             self._event_embedding_history[visitor.id] = [normed]
+        for row in session_rows:
+            visitor_db_id = row.visitor_id
+            if visitor_db_id in self._event_visitor_ids and visitor_db_id not in self._event_display_ids:
+                self._event_display_ids[visitor_db_id] = f"ID{self._event_next_display_num}"
+                self._event_next_display_num += 1
+
+    def _get_or_assign_event_display_id(self, visitor_db_id: int) -> str:
+        if visitor_db_id in self._event_display_ids:
+            return self._event_display_ids[visitor_db_id]
+        label = f"ID{self._event_next_display_num}"
+        self._event_display_ids[visitor_db_id] = label
+        self._event_next_display_num += 1
+        return label
 
     def _ensure_event_identity_state(self, event_context: Optional[dict]):
         event_key = self._derive_event_key(event_context)
@@ -966,7 +994,8 @@ class FaceRecognitionService:
                                 visitor.embedding = updated.astype(np.float32).tobytes()
                         self._append_event_embedding_sample(visitor.id, stable_embedding, limit=5)
 
-                        label = f"{visitor.visitor_id} [Visitor]"
+                        event_display_id = self._get_or_assign_event_display_id(visitor.id)
+                        label = f"{event_display_id} ({max(0.0, rescue_score):.2f})"
                         color = (0, 255, 0)
                         valid_db_ids.add(visitor.id)
                         stats['known_visitors'] += 1
@@ -1012,7 +1041,8 @@ class FaceRecognitionService:
                 }
                 valid_db_ids.add(visitor.id)
                 stats['new_visitors'] += 1
-                label = f"{visitor_code} [New Visitor]"
+                event_display_id = self._get_or_assign_event_display_id(visitor.id)
+                label = f"{event_display_id} (New)"
                 color = (0, 255, 255)
                 changed = True
             else:
@@ -1051,7 +1081,8 @@ class FaceRecognitionService:
                     if updated is not None:
                         visitor.embedding = updated.astype(np.float32).tobytes()
                 self._append_event_embedding_sample(visitor.id, emb, limit=5)
-                label = f"{visitor.visitor_id} [Visitor]"
+                event_display_id = self._get_or_assign_event_display_id(visitor.id)
+                label = f"{event_display_id} ({max(0.0, matched_score):.2f})"
                 color = (0, 255, 0)
                 valid_db_ids.add(visitor.id)
                 stats['known_visitors'] += 1

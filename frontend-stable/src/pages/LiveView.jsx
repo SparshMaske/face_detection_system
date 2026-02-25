@@ -439,13 +439,14 @@ export default function LiveView() {
                 muted
                 playsInline
                 style={isSelfieMode ? { transform: 'scaleX(-1)' } : undefined}
-                className={`w-full h-full object-contain ${processedFrameUrl ? 'opacity-0 absolute inset-0 pointer-events-none' : ''}`}
+                className={`w-full h-full object-contain ${processedFrameUrl ? 'opacity-20' : ''}`}
               />
               {processedFrameUrl && (
                 <img
                   src={processedFrameUrl}
                   alt="Processed Device Feed"
-                  className="w-full h-full object-contain"
+                  className="absolute inset-0 z-20 w-full h-full object-contain"
+                  style={{ imageRendering: 'auto' }}
                 />
               )}
               <canvas ref={canvasRef} className="hidden" />
@@ -455,6 +456,7 @@ export default function LiveView() {
               src={streamSrc}
               alt="Live Feed" 
               className="w-full h-full object-contain"
+              style={{ imageRendering: 'auto' }}
               onError={() => setStreamError('Failed to load camera stream. Verify camera source and backend OpenCV access.')}
             />
           )}
@@ -462,6 +464,9 @@ export default function LiveView() {
             {isClientDeviceMode
               ? `${selectedCamera.name} (This Device${isPhoneClient ? ` • ${isSelfieMode ? 'Selfie' : 'Rear'}` : ''})`
               : selectedCamera.name}
+          </div>
+          <div className="absolute top-4 right-4 bg-emerald-700/70 text-white px-2 py-1 rounded text-xs">
+            AI Bounding Box: On
           </div>
           {isClientDeviceMode && isFramePending && !processedFrameUrl && !streamError && !deviceError && (
             <div className="absolute bottom-4 left-1/2 -translate-x-1/2 bg-black/60 text-white text-sm px-3 py-1 rounded">
