@@ -96,12 +96,12 @@ class FaceRecognitionService:
         return True, yaw_ratio, 0.0
 
     @staticmethod
-    def _draw_papp_style_box(frame, bbox, label, color, thickness=2, font_scale=0.6, text_thickness=2, y_offset=-10):
+    def _draw_papp_style_box(frame, bbox, label, color, thickness=1, font_scale=0.55, text_thickness=1, y_offset=-10):
         """
         Match P_app.py box visibility parameters:
-        - Recognized/New: box thickness=2, font_scale=0.6, text at y1-10
+        - Recognized/New: slimmer box, readable label at y1-10
         - Too Far/Blurry: box thickness=1, font_scale=0.5, text near y1
-        - Tilted: box thickness=2, font_scale=0.6
+        - Tilted: slim box with visible label
         """
         x1, y1, x2, y2 = bbox
         cv2.rectangle(frame, (x1, y1), (x2, y2), color, max(1, int(thickness)))
@@ -900,9 +900,9 @@ class FaceRecognitionService:
                     current_bbox,
                     "Tilted",
                     (255, 0, 255),
-                    thickness=2,
-                    font_scale=0.6,
-                    text_thickness=2,
+                    thickness=1,
+                    font_scale=0.55,
+                    text_thickness=1,
                     y_offset=0,
                 )
                 continue
@@ -933,7 +933,7 @@ class FaceRecognitionService:
                 staff_role = (matched_staff.position or matched_staff.department or 'Staff').strip()
                 label = f"{matched_staff.staff_id} [{staff_role}]"
                 color = (255, 170, 0)
-                self._draw_papp_style_box(frame, current_bbox, label, color, thickness=2, font_scale=0.6, text_thickness=2, y_offset=-10)
+                self._draw_papp_style_box(frame, current_bbox, label, color, thickness=1, font_scale=0.55, text_thickness=1, y_offset=-10)
                 continue
 
             matched_db_id = identity_value if identity_type == 'visitor' else None
@@ -948,7 +948,7 @@ class FaceRecognitionService:
                     min_frames = max(2, min_frames)
                 if int(candidate.get('count', 0)) < min_frames:
                     color = (0, 200, 255)
-                    self._draw_papp_style_box(frame, current_bbox, "Analyzing...", color, thickness=2, font_scale=0.6, text_thickness=2, y_offset=-10)
+                    self._draw_papp_style_box(frame, current_bbox, "Analyzing...", color, thickness=1, font_scale=0.55, text_thickness=1, y_offset=-10)
                     continue
 
                 self._clear_specific_candidate(candidate)
@@ -1000,7 +1000,7 @@ class FaceRecognitionService:
                         valid_db_ids.add(visitor.id)
                         stats['known_visitors'] += 1
                         changed = True
-                        self._draw_papp_style_box(frame, current_bbox, label, color, thickness=2, font_scale=0.6, text_thickness=2, y_offset=-10)
+                        self._draw_papp_style_box(frame, current_bbox, label, color, thickness=1, font_scale=0.55, text_thickness=1, y_offset=-10)
                         continue
 
                 visitor_code = self._get_next_visitor_id()
@@ -1088,7 +1088,7 @@ class FaceRecognitionService:
                 stats['known_visitors'] += 1
                 changed = True
 
-            self._draw_papp_style_box(frame, current_bbox, label, color, thickness=2, font_scale=0.6, text_thickness=2, y_offset=-10)
+            self._draw_papp_style_box(frame, current_bbox, label, color, thickness=1, font_scale=0.55, text_thickness=1, y_offset=-10)
 
         if self._finalize_absent_sessions(
             valid_db_ids,

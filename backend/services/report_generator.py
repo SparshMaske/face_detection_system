@@ -237,86 +237,159 @@ class ReportGenerator:
         styles = getSampleStyleSheet()
         elements = []
 
-        elements.append(Paragraph(title_text, styles['Title']))
-        elements.append(Paragraph(subtitle_text, styles['Normal']))
-        elements.append(Spacer(1, 12))
-
         if not visitors_payload:
+            elements.append(Paragraph(title_text, styles['Title']))
+            elements.append(Paragraph(subtitle_text, styles['Normal']))
+            elements.append(Spacer(1, 12))
             elements.append(Paragraph("No visitors found in selected window.", styles['Normal']))
             doc.build(elements)
             return
 
-        for idx, visitor_item in enumerate(visitors_payload):
-            elements.append(Paragraph(f"Visitor: {visitor_item['visitor_id']}", styles['Heading2']))
-            table = Table([
-                ['Date', visitor_item['date']],
-                ['First In Time', visitor_item['first_in']],
-                ['Last Out Time', visitor_item['last_out']],
-                ['Total Duration', visitor_item['duration']],
-            ], colWidths=[150, 280])
-            table.setStyle(TableStyle([
-                ('BACKGROUND', (0, 0), (0, -1), colors.lightgrey),
+        def _card_for_visitor(item):
+            body = []
+            body.append(Paragraph(f"ID: {item['visitor_id']}", styles['Heading4']))
+            body.append(Spacer(1, 4))
+
+            detail_table = Table([
+                ['Date', item['date']],
+                ['First In', item['first_in']],
+                ['Last Out', item['last_out']],
+                ['Duration', item['duration']],
+            ], colWidths=[58, 148])
+            detail_table.setStyle(TableStyle([
                 ('FONTNAME', (0, 0), (-1, -1), 'Helvetica'),
                 ('FONTNAME', (0, 0), (0, -1), 'Helvetica-Bold'),
-                ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
+                ('FONTSIZE', (0, 0), (-1, -1), 8),
+                ('GRID', (0, 0), (-1, -1), 0.35, colors.grey),
                 ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
                 ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
                 ('ROWBACKGROUNDS', (0, 0), (-1, -1), [colors.whitesmoke, colors.beige]),
             ]))
-            elements.append(table)
+            body.append(detail_table)
+            body.append(Spacer(1, 5))
+
+            image_path = item.get('snapshot_path')
+            if image_path and os.path.exists(image_path):
+                body.append(Image(image_path, width=106, height=132))
+            else:
+                body.append(Paragraph("Snapshot unavailable", styles['Italic']))
+
+            card = Table([[body]], colWidths=[210])
+            card.setStyle(TableStyle([
+                ('BOX', (0, 0), (-1, -1), 0.7, colors.HexColor('#6b7280')),
+                ('BACKGROUND', (0, 0), (-1, -1), colors.HexColor('#f8fafc')),
+                ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+                ('LEFTPADDING', (0, 0), (-1, -1), 6),
+                ('RIGHTPADDING', (0, 0), (-1, -1), 6),
+                ('TOPPADDING', (0, 0), (-1, -1), 6),
+                ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
+            ]))
+            return card
+
+        page_size = 4
+        for start in range(0, len(visitors_payload), page_size):
+            if start > 0:
+                elements.append(PageBreak())
+
+            elements.append(Paragraph(title_text, styles['Title']))
+            elements.append(Paragraph(subtitle_text, styles['Normal']))
             elements.append(Spacer(1, 10))
 
-            image_path = visitor_item.get('snapshot_path')
-            if image_path and os.path.exists(image_path):
-                elements.append(Image(image_path, width=180, height=230))
-                elements.append(Spacer(1, 8))
+            chunk = visitors_payload[start:start + page_size]
+            row_data = []
+            current_row = []
+            for item in chunk:
+                current_row.append(_card_for_visitor(item))
+                if len(current_row) == 2:
+                    row_data.append(current_row)
+                    current_row = []
+            if current_row:
+                current_row.append('')
+                row_data.append(current_row)
 
-            if idx < len(visitors_payload) - 1:
-                elements.append(PageBreak())
+            grid = Table(row_data, colWidths=[220, 220], hAlign='LEFT')
+            grid.setStyle(TableStyle([
+                ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+                ('LEFTPADDING', (0, 0), (-1, -1), 0),
+                ('RIGHTPADDING', (0, 0), (-1, -1), 8),
+                ('TOPPADDING', (0, 0), (-1, -1), 0),
+                ('BOTTOMPADDING', (0, 0), (-1, -1), 8),
+            ]))
+            elements.append(grid)
 
         doc.build(elements)
 
     def _build_event_visitors_with_fpdf(self, filepath, title_text, subtitle_text, visitors_payload):
         pdf = FPDF()
-        pdf.set_auto_page_break(auto=True, margin=12)
-        pdf.add_page()
-        pdf.set_font('Arial', 'B', 16)
-        pdf.cell(0, 10, self._safe_text(title_text), ln=1)
-        pdf.set_font('Arial', '', 11)
-        pdf.cell(0, 8, self._safe_text(subtitle_text), ln=1)
+        pdf.set_auto_page_break(auto=False)
 
         if not visitors_payload:
+            pdf.add_page()
+            pdf.set_font('Arial', 'B', 16)
+            pdf.cell(0, 10, self._safe_text(title_text), ln=1)
+            pdf.set_font('Arial', '', 11)
+            pdf.cell(0, 8, self._safe_text(subtitle_text), ln=1)
             pdf.ln(6)
             pdf.set_font('Arial', '', 11)
             pdf.cell(0, 8, 'No visitors found in selected window.', ln=1)
             pdf.output(filepath)
             return
 
+        page_index = -1
         for idx, visitor_item in enumerate(visitors_payload):
-            if idx > 0:
+            slot = idx % 4
+            if slot == 0:
+                page_index += 1
                 pdf.add_page()
-            pdf.ln(4)
-            pdf.set_font('Arial', 'B', 13)
-            pdf.cell(0, 8, self._safe_text(f"Visitor: {visitor_item['visitor_id']}"), ln=1)
+                pdf.set_font('Arial', 'B', 15)
+                pdf.cell(0, 9, self._safe_text(title_text), ln=1)
+                pdf.set_font('Arial', '', 10)
+                pdf.multi_cell(0, 5, self._safe_text(subtitle_text))
+                pdf.ln(2)
 
-            pdf.set_font('Arial', 'B', 10)
-            rows = [
-                ('Date', visitor_item['date']),
-                ('First In Time', visitor_item['first_in']),
-                ('Last Out Time', visitor_item['last_out']),
-                ('Total Duration', visitor_item['duration']),
+            row = slot // 2
+            col = slot % 2
+            card_x = 10 + (col * 98)
+            card_y = 30 + (row * 130)
+            card_w = 92
+            card_h = 122
+
+            pdf.set_draw_color(108, 117, 125)
+            pdf.rect(card_x, card_y, card_w, card_h)
+
+            pdf.set_xy(card_x + 3, card_y + 4)
+            pdf.set_font('Arial', 'B', 11)
+            pdf.cell(card_w - 6, 6, self._safe_text(f"ID: {visitor_item['visitor_id']}"), ln=1)
+
+            details = [
+                f"Date: {visitor_item['date']}",
+                f"First In: {visitor_item['first_in']}",
+                f"Last Out: {visitor_item['last_out']}",
+                f"Duration: {visitor_item['duration']}",
             ]
-            for key, value in rows:
-                pdf.cell(48, 8, self._safe_text(key), border=1)
-                pdf.cell(132, 8, self._safe_text(value), border=1, ln=1)
+            pdf.set_font('Arial', '', 8)
+            text_y = card_y + 12
+            for line in details:
+                pdf.set_xy(card_x + 3, text_y)
+                pdf.multi_cell(card_w - 6, 4.3, self._safe_text(line))
+                text_y = pdf.get_y() + 0.5
 
             image_path = visitor_item.get('snapshot_path')
             if image_path and os.path.exists(image_path):
-                pdf.ln(8)
                 try:
-                    pdf.image(image_path, w=62)
+                    image_w = 44
+                    image_h = 54
+                    image_x = card_x + (card_w - image_w) / 2
+                    image_y = card_y + card_h - image_h - 4
+                    pdf.image(image_path, x=image_x, y=image_y, w=image_w, h=image_h)
                 except Exception:
-                    pass
+                    pdf.set_xy(card_x + 3, card_y + card_h - 10)
+                    pdf.set_font('Arial', 'I', 8)
+                    pdf.cell(card_w - 6, 5, 'Snapshot unavailable', ln=1)
+            else:
+                pdf.set_xy(card_x + 3, card_y + card_h - 10)
+                pdf.set_font('Arial', 'I', 8)
+                pdf.cell(card_w - 6, 5, 'Snapshot unavailable', ln=1)
 
         pdf.output(filepath)
 
