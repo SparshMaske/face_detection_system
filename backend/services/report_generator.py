@@ -60,16 +60,31 @@ class ReportGenerator:
         minutes, secs = divmod(remainder, 60)
         return f"{hours:02d}:{minutes:02d}:{secs:02d}"
 
-    def _resolve_visitor_image_path(self, visitor):
+    def _resolve_visitor_image_path(self, visitor, prefer_first=False, reference_time=None):
         upload_root = current_app.config.get('UPLOAD_FOLDER')
         visitor_root = current_app.config.get('VISITOR_UPLOAD_FOLDER')
 
         candidates = []
-        # Prefer newest stored visitor image so event report uses the latest capture.
-        images = sorted(visitor.images or [], key=lambda item: item.captured_at or datetime.min, reverse=True)
+        images = list(visitor.images or [])
+        if prefer_first:
+            images.sort(key=lambda item: item.captured_at or datetime.max)
+            if reference_time:
+                # Pick image nearest to first appearance while preferring earlier captures.
+                def _rank(item):
+                    captured = item.captured_at or datetime.max
+                    if captured <= reference_time:
+                        return (0, (reference_time - captured).total_seconds())
+                    return (1, (captured - reference_time).total_seconds())
+
+                images = sorted(images, key=_rank)
+        else:
+            # Default behavior for other flows: newest image first.
+            images.sort(key=lambda item: item.captured_at or datetime.min, reverse=True)
+
         for item in images:
             if item.image_path:
                 candidates.append(item.image_path)
+
         if visitor.primary_image_path:
             candidates.append(visitor.primary_image_path)
 
@@ -233,8 +248,12 @@ class ReportGenerator:
         pdf.output(filepath)
 
     def _build_event_visitors_with_reportlab(self, filepath, title_text, subtitle_text, visitors_payload):
-        doc = SimpleDocTemplate(filepath, pagesize=A4)
+        doc = SimpleDocTemplate(filepath, pagesize=A4, leftMargin=16, rightMargin=16, topMargin=18, bottomMargin=18)
         styles = getSampleStyleSheet()
+        card_text_style = styles['Normal'].clone('CardText')
+        card_text_style.fontName = 'Helvetica'
+        card_text_style.fontSize = 7
+        card_text_style.leading = 8
         elements = []
 
         if not visitors_payload:
@@ -247,34 +266,21 @@ class ReportGenerator:
 
         def _card_for_visitor(item):
             body = []
-            body.append(Paragraph(f"ID: {item['visitor_id']}", styles['Heading4']))
-            body.append(Spacer(1, 4))
-
-            detail_table = Table([
-                ['Date', item['date']],
-                ['First In', item['first_in']],
-                ['Last Out', item['last_out']],
-                ['Duration', item['duration']],
-            ], colWidths=[58, 148])
-            detail_table.setStyle(TableStyle([
-                ('FONTNAME', (0, 0), (-1, -1), 'Helvetica'),
-                ('FONTNAME', (0, 0), (0, -1), 'Helvetica-Bold'),
-                ('FONTSIZE', (0, 0), (-1, -1), 8),
-                ('GRID', (0, 0), (-1, -1), 0.35, colors.grey),
-                ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
-                ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
-                ('ROWBACKGROUNDS', (0, 0), (-1, -1), [colors.whitesmoke, colors.beige]),
-            ]))
-            body.append(detail_table)
-            body.append(Spacer(1, 5))
+            body.append(Paragraph(f"<b>{item['visitor_id']}</b>", card_text_style))
+            body.append(Spacer(1, 2))
+            body.append(Paragraph(f"Date: {item['date']}", card_text_style))
+            body.append(Paragraph(f"In: {item['first_in']}", card_text_style))
+            body.append(Paragraph(f"Out: {item['last_out']}", card_text_style))
+            body.append(Paragraph(f"Dur: {item['duration']}", card_text_style))
+            body.append(Spacer(1, 3))
 
             image_path = item.get('snapshot_path')
             if image_path and os.path.exists(image_path):
-                body.append(Image(image_path, width=106, height=132))
+                body.append(Image(image_path, width=62, height=78))
             else:
                 body.append(Paragraph("Snapshot unavailable", styles['Italic']))
 
-            card = Table([[body]], colWidths=[210])
+            card = Table([[body]], colWidths=[133])
             card.setStyle(TableStyle([
                 ('BOX', (0, 0), (-1, -1), 0.7, colors.HexColor('#6b7280')),
                 ('BACKGROUND', (0, 0), (-1, -1), colors.HexColor('#f8fafc')),
@@ -286,7 +292,7 @@ class ReportGenerator:
             ]))
             return card
 
-        page_size = 4
+        page_size = 16
         for start in range(0, len(visitors_payload), page_size):
             if start > 0:
                 elements.append(PageBreak())
@@ -300,20 +306,21 @@ class ReportGenerator:
             current_row = []
             for item in chunk:
                 current_row.append(_card_for_visitor(item))
-                if len(current_row) == 2:
+                if len(current_row) == 4:
                     row_data.append(current_row)
                     current_row = []
             if current_row:
-                current_row.append('')
+                while len(current_row) < 4:
+                    current_row.append('')
                 row_data.append(current_row)
 
-            grid = Table(row_data, colWidths=[220, 220], hAlign='LEFT')
+            grid = Table(row_data, colWidths=[136, 136, 136, 136], hAlign='LEFT')
             grid.setStyle(TableStyle([
                 ('VALIGN', (0, 0), (-1, -1), 'TOP'),
                 ('LEFTPADDING', (0, 0), (-1, -1), 0),
-                ('RIGHTPADDING', (0, 0), (-1, -1), 8),
+                ('RIGHTPADDING', (0, 0), (-1, -1), 4),
                 ('TOPPADDING', (0, 0), (-1, -1), 0),
-                ('BOTTOMPADDING', (0, 0), (-1, -1), 8),
+                ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
             ]))
             elements.append(grid)
 
@@ -337,59 +344,59 @@ class ReportGenerator:
 
         page_index = -1
         for idx, visitor_item in enumerate(visitors_payload):
-            slot = idx % 4
+            slot = idx % 16
             if slot == 0:
                 page_index += 1
                 pdf.add_page()
-                pdf.set_font('Arial', 'B', 15)
-                pdf.cell(0, 9, self._safe_text(title_text), ln=1)
-                pdf.set_font('Arial', '', 10)
-                pdf.multi_cell(0, 5, self._safe_text(subtitle_text))
-                pdf.ln(2)
+                pdf.set_font('Arial', 'B', 12)
+                pdf.cell(0, 7, self._safe_text(title_text), ln=1)
+                pdf.set_font('Arial', '', 8)
+                pdf.multi_cell(0, 4, self._safe_text(subtitle_text))
+                pdf.ln(1)
 
-            row = slot // 2
-            col = slot % 2
-            card_x = 10 + (col * 98)
-            card_y = 30 + (row * 130)
-            card_w = 92
-            card_h = 122
+            row = slot // 4
+            col = slot % 4
+            card_x = 8 + (col * 49)
+            card_y = 23 + (row * 68)
+            card_w = 45
+            card_h = 64
 
             pdf.set_draw_color(108, 117, 125)
             pdf.rect(card_x, card_y, card_w, card_h)
 
-            pdf.set_xy(card_x + 3, card_y + 4)
-            pdf.set_font('Arial', 'B', 11)
-            pdf.cell(card_w - 6, 6, self._safe_text(f"ID: {visitor_item['visitor_id']}"), ln=1)
+            pdf.set_xy(card_x + 2, card_y + 2)
+            pdf.set_font('Arial', 'B', 8)
+            pdf.cell(card_w - 4, 4, self._safe_text(visitor_item['visitor_id']), ln=1)
 
             details = [
-                f"Date: {visitor_item['date']}",
-                f"First In: {visitor_item['first_in']}",
-                f"Last Out: {visitor_item['last_out']}",
-                f"Duration: {visitor_item['duration']}",
+                f"D:{visitor_item['date']}",
+                f"I:{visitor_item['first_in']}",
+                f"O:{visitor_item['last_out']}",
+                f"T:{visitor_item['duration']}",
             ]
-            pdf.set_font('Arial', '', 8)
-            text_y = card_y + 12
+            pdf.set_font('Arial', '', 6)
+            text_y = card_y + 7
             for line in details:
-                pdf.set_xy(card_x + 3, text_y)
-                pdf.multi_cell(card_w - 6, 4.3, self._safe_text(line))
-                text_y = pdf.get_y() + 0.5
+                pdf.set_xy(card_x + 2, text_y)
+                pdf.multi_cell(card_w - 4, 3.1, self._safe_text(line))
+                text_y = pdf.get_y()
 
             image_path = visitor_item.get('snapshot_path')
             if image_path and os.path.exists(image_path):
                 try:
-                    image_w = 44
-                    image_h = 54
+                    image_w = 26
+                    image_h = 30
                     image_x = card_x + (card_w - image_w) / 2
-                    image_y = card_y + card_h - image_h - 4
+                    image_y = card_y + card_h - image_h - 2
                     pdf.image(image_path, x=image_x, y=image_y, w=image_w, h=image_h)
                 except Exception:
-                    pdf.set_xy(card_x + 3, card_y + card_h - 10)
-                    pdf.set_font('Arial', 'I', 8)
-                    pdf.cell(card_w - 6, 5, 'Snapshot unavailable', ln=1)
+                    pdf.set_xy(card_x + 2, card_y + card_h - 5)
+                    pdf.set_font('Arial', 'I', 5)
+                    pdf.cell(card_w - 4, 3, 'No snap', ln=1)
             else:
-                pdf.set_xy(card_x + 3, card_y + card_h - 10)
-                pdf.set_font('Arial', 'I', 8)
-                pdf.cell(card_w - 6, 5, 'Snapshot unavailable', ln=1)
+                pdf.set_xy(card_x + 2, card_y + card_h - 5)
+                pdf.set_font('Arial', 'I', 5)
+                pdf.cell(card_w - 4, 3, 'No snap', ln=1)
 
         pdf.output(filepath)
 
@@ -528,7 +535,11 @@ class ReportGenerator:
                 last_out = summary['last_out']
                 snapshot_path = None
                 if visitor is not None:
-                    raw_path = self._resolve_visitor_image_path(visitor)
+                    raw_path = self._resolve_visitor_image_path(
+                        visitor,
+                        prefer_first=True,
+                        reference_time=first_in,
+                    )
                     snapshot_path = self._prepare_face_to_shoulder_snapshot(raw_path, canonical_code)
                     if not snapshot_path or not os.path.exists(snapshot_path):
                         snapshot_path = self._latest_existing_snapshot(canonical_code)
