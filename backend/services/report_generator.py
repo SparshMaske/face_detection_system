@@ -437,17 +437,28 @@ class ReportGenerator:
         if grouped:
             visitors = Visitor.query.filter(Visitor.id.in_(grouped.keys())).all()
             visitors_by_id = {v.id: v for v in visitors}
-            for visitor_db_id, summary in grouped.items():
+            ordered_visitor_ids = sorted(
+                grouped.keys(),
+                key=lambda vid: grouped[vid]['first_in'] or datetime.max,
+            )
+            display_id_map = {
+                visitor_db_id: f"ID{idx}"
+                for idx, visitor_db_id in enumerate(ordered_visitor_ids, start=1)
+            }
+
+            for visitor_db_id in ordered_visitor_ids:
+                summary = grouped[visitor_db_id]
                 visitor = visitors_by_id.get(visitor_db_id)
-                visitor_code = visitor.visitor_id if visitor else f'VISITOR-{visitor_db_id}'
+                visitor_code = display_id_map.get(visitor_db_id, f'ID{visitor_db_id}')
+                canonical_code = visitor.visitor_id if visitor else f'VISITOR-{visitor_db_id}'
                 first_in = summary['first_in']
                 last_out = summary['last_out']
                 snapshot_path = None
                 if visitor is not None:
                     raw_path = self._resolve_visitor_image_path(visitor)
-                    snapshot_path = self._prepare_face_to_shoulder_snapshot(raw_path, visitor_code)
+                    snapshot_path = self._prepare_face_to_shoulder_snapshot(raw_path, canonical_code)
                     if not snapshot_path or not os.path.exists(snapshot_path):
-                        snapshot_path = self._latest_existing_snapshot(visitor_code)
+                        snapshot_path = self._latest_existing_snapshot(canonical_code)
                 duration_seconds = 0
                 if first_in and last_out:
                     duration_seconds = max(0, int((last_out - first_in).total_seconds()))

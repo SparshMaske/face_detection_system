@@ -816,10 +816,20 @@ def export_completed_event_csv(event_id):
         'pdf_content',
     ])
 
-    for visitor_db_id in sorted(grouped.keys()):
+    ordered_visitor_ids = sorted(
+        grouped.keys(),
+        key=lambda vid: grouped[vid].get('first_in') or datetime.max,
+    )
+    display_id_map = {
+        visitor_db_id: f"ID{idx}"
+        for idx, visitor_db_id in enumerate(ordered_visitor_ids, start=1)
+    }
+
+    for visitor_db_id in ordered_visitor_ids:
         summary = grouped[visitor_db_id]
         visitor = visitor_by_id.get(visitor_db_id)
-        visitor_code = visitor.visitor_id if visitor else f'VISITOR-{visitor_db_id}'
+        visitor_code = display_id_map.get(visitor_db_id, f'ID{visitor_db_id}')
+        canonical_code = visitor.visitor_id if visitor else f'VISITOR-{visitor_db_id}'
         first_in = summary.get('first_in')
         last_out = summary.get('last_out')
         duration_seconds = 0
@@ -827,7 +837,7 @@ def export_completed_event_csv(event_id):
             duration_seconds = max(0, int((last_out - first_in).total_seconds()))
         duration_text = _format_duration(duration_seconds)
 
-        pdf_filename = f"{visitor_code}_report.pdf"
+        pdf_filename = f"{canonical_code}_report.pdf"
         pdf_path = os.path.join(reports_root, pdf_filename)
         pdf_file = pdf_filename if os.path.exists(pdf_path) else ''
 
