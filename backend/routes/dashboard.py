@@ -33,6 +33,20 @@ def _apply_windows(query, windows):
     ]
     return query.filter(or_(*overlaps))
 
+
+def _event_display_id_map(windows):
+    if not windows:
+        return {}
+    ordered_sessions = _apply_windows(
+        VisitorSession.query,
+        windows,
+    ).order_by(VisitorSession.entry_time.asc(), VisitorSession.id.asc()).all()
+    mapping = {}
+    for session in ordered_sessions:
+        if session.visitor_id not in mapping:
+            mapping[session.visitor_id] = f"ID{len(mapping) + 1}"
+    return mapping
+
 @dashboard_bp.route('/stats', methods=['GET'])
 @jwt_required()
 def get_stats():
@@ -73,6 +87,7 @@ def get_stats():
 @jwt_required()
 def recent_activity():
     event_name, windows = _get_current_event_scope()
+    display_map = _event_display_id_map(windows) if windows else {}
 
     query = VisitorSession.query
     if windows:
@@ -83,9 +98,14 @@ def recent_activity():
     for session in recent_sessions:
         # Use backref to get visitor object
         v = session.visitor
+        raw_code = v.visitor_id if v else 'Unknown'
+        display_code = raw_code
+        if v and windows:
+            display_code = display_map.get(v.id, raw_code)
         results.append({
             'id': session.id,
-            'visitor_id': v.visitor_id if v else 'Unknown',
+            'visitor_id': display_code,
+            'canonical_visitor_id': raw_code,
             'entry_time': session.entry_time.isoformat() if session.entry_time else None,
             'exit_time': session.exit_time.isoformat() if session.exit_time else None,
             'duration_formatted': session.to_dict()['duration_formatted'],

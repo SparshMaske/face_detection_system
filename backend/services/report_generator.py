@@ -65,14 +65,13 @@ class ReportGenerator:
         visitor_root = current_app.config.get('VISITOR_UPLOAD_FOLDER')
 
         candidates = []
-        if visitor.primary_image_path:
-            candidates.append(visitor.primary_image_path)
-
-        # Fallback to newest stored visitor image if primary path is unavailable.
+        # Prefer newest stored visitor image so event report uses the latest capture.
         images = sorted(visitor.images or [], key=lambda item: item.captured_at or datetime.min, reverse=True)
         for item in images:
             if item.image_path:
                 candidates.append(item.image_path)
+        if visitor.primary_image_path:
+            candidates.append(visitor.primary_image_path)
 
         for raw_path in candidates:
             if not raw_path:
@@ -396,9 +395,13 @@ class ReportGenerator:
 
         pdf.output(filepath)
 
-    def generate_pdf_report(self, start_date, end_date, report_type='daily'):
+    def generate_pdf_report(self, start_date, end_date, report_type='daily', event_name=None, event_id=None):
         self._ensure_pdf_backend()
-        filename = f"Visitor_Report_{report_type}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
+        safe_event_name = (event_name or '').strip().replace(' ', '_')
+        if safe_event_name:
+            filename = f"Visitor_Report_{safe_event_name}_{report_type}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
+        else:
+            filename = f"Visitor_Report_{report_type}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
         filepath = os.path.join(self.reports_dir, filename)
 
         s_date = self._parse_datetime(start_date, is_end=False)
@@ -461,6 +464,10 @@ class ReportGenerator:
         visitors_payload.sort(key=lambda item: item['first_in'])
         title_text = f"Visitor Report ({report_type.title()})"
         subtitle_text = f"Period: {start_date} to {end_date}"
+        if event_name:
+            subtitle_text = f"Event: {event_name} | {subtitle_text}"
+        if event_id:
+            subtitle_text = f"{subtitle_text} | Event ID: {event_id}"
         if REPORTLAB_AVAILABLE:
             self._build_event_visitors_with_reportlab(filepath, title_text, subtitle_text, visitors_payload)
         else:

@@ -500,6 +500,33 @@ def _find_event_by_id(records: List[Dict], event_id: Optional[str]) -> Optional[
     return None
 
 
+def get_event_by_id(event_id: Optional[str]) -> Optional[Dict]:
+    if not event_id:
+        return None
+    with _EVENT_LOCK:
+        records = _load_event_registry()
+        _sync_registry_status(records)
+        record = _find_event_by_id(records, event_id)
+        return _serialize_record(record) if record else None
+
+
+def get_events_for_date(target_date):
+    with _EVENT_LOCK:
+        records = _load_event_registry()
+        _sync_registry_status(records)
+
+        matched = []
+        for record in records:
+            start_dt, end_dt = _record_window(record)
+            if not start_dt or not end_dt:
+                continue
+            if start_dt.date() <= target_date <= end_dt.date():
+                matched.append(_serialize_record(record))
+
+        matched.sort(key=lambda item: (item.get('start_time') or '', item.get('created_at') or ''))
+        return matched
+
+
 @events_bp.route('/current', methods=['GET'])
 @jwt_required()
 def get_current_event():

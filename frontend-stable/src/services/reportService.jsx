@@ -5,3 +5,6 @@ export const generateReport = (data) => api.post('/reports/generate', data, {
 });
 
 export const listReports = () => api.get('/reports/list');
+
+export const getEventsOnDate = (date) =>
+  api.get('/reports/events-on-date', { params: { date } });

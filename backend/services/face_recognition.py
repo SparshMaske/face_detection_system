@@ -32,6 +32,7 @@ class FaceRecognitionService:
         print("InsightFace model loaded.")
 
         self._embeddings: Dict[int, np.ndarray] = {}
+        self._embedding_history: Dict[int, List[np.ndarray]] = {}
         self._visitor_codes: Dict[int, str] = {}
         self._staff_embeddings: List[Tuple[int, np.ndarray]] = []
         self._active_tracks: Dict[int, Dict] = {}
@@ -78,15 +79,16 @@ class FaceRecognitionService:
         left_eye = kps[0]
         right_eye = kps[1]
         nose = kps[2]
+
         dx = float(right_eye[0] - left_eye[0])
-        dy = float(right_eye[1] - left_eye[1])
         eye_distance = abs(dx)
         if eye_distance == 0:
-            return False, 0.0, 0.0
+            # Follow P_app behavior: treat invalid eye geometry as tilted/rejected.
+            return True, 1.0, 0.0
         eyes_mid_x = (float(left_eye[0]) + float(right_eye[0])) / 2.0
         yaw_ratio = abs(float(nose[0]) - eyes_mid_x) / eye_distance
-        roll_angle_deg = abs(float(np.degrees(np.arctan2(dy, dx))))
-        return True, yaw_ratio, roll_angle_deg
+        # P_app tilt check is based on nose-vs-eye-center deviation ratio.
+        return True, yaw_ratio, 0.0
 
     @staticmethod
     def _draw_papp_style_box(frame, bbox, label, color, thickness=2, font_scale=0.6, text_thickness=2, y_offset=-10):
@@ -121,14 +123,19 @@ class FaceRecognitionService:
 
         visitors = Visitor.query.filter(Visitor.embedding.isnot(None)).all()
         cache_embeddings = {}
+        cache_history = {}
         cache_codes = {}
         for visitor in visitors:
             emb = np.frombuffer(visitor.embedding, dtype=np.float32)
             normed = self._norm(emb)
             if normed is not None:
                 cache_embeddings[visitor.id] = normed
+                prior_samples = list(self._embedding_history.get(visitor.id, []))
+                merged_samples = prior_samples + [normed]
+                cache_history[visitor.id] = self._dedupe_and_limit_embeddings(merged_samples, limit=5)
                 cache_codes[visitor.id] = visitor.visitor_id
         self._embeddings = cache_embeddings
+        self._embedding_history = cache_history
         self._visitor_codes = cache_codes
         self._last_cache_sync = now
 
@@ -158,14 +165,18 @@ class FaceRecognitionService:
         self._sync_staff_cache(force=True)
 
     def _get_next_visitor_id(self) -> str:
+        used_numbers = set()
+        for value in db.session.query(Visitor.visitor_id).all():
+            visitor_id = value[0] or ''
+            match = re.match(r'^ID(\d+)$', visitor_id)
+            if match:
+                used_numbers.add(int(match.group(1)))
+
         if self._next_visitor_num is None:
-            max_num = 0
-            for value in db.session.query(Visitor.visitor_id).all():
-                visitor_id = value[0] or ''
-                match = re.match(r'^ID(\d+)$', visitor_id)
-                if match:
-                    max_num = max(max_num, int(match.group(1)))
-            self._next_visitor_num = max_num + 1
+            self._next_visitor_num = 1
+
+        while self._next_visitor_num in used_numbers:
+            self._next_visitor_num += 1
 
         visitor_code = f"ID{self._next_visitor_num}"
         self._next_visitor_num += 1
@@ -173,13 +184,23 @@ class FaceRecognitionService:
 
     def _upsert_pending_candidate(self, bbox, embedding, now_local, camera_db_id=None):
         best_idx = None
-        best_iou = 0.0
+        best_rank = -1.0
         for idx, cand in enumerate(self._pending_candidates):
             if camera_db_id is not None and cand.get('camera_id') != camera_db_id:
                 continue
-            iou = self._iou(cand.get('bbox'), bbox)
-            if iou > 0.45 and iou > best_iou:
-                best_iou = iou
+            cand_bbox = cand.get('bbox')
+            iou = self._iou(cand_bbox, bbox) if cand_bbox is not None else 0.0
+            cand_embedding = cand.get('embedding')
+            similarity = float(np.dot(embedding, cand_embedding)) if cand_embedding is not None else -1.0
+
+            # Keep pending identity stable when face shifts quickly:
+            # use IoU plus embedding agreement (P_app-style sticky IDs).
+            if iou < 0.30 and similarity < 0.70:
+                continue
+
+            rank = (iou * 0.65) + (max(similarity, 0.0) * 0.35)
+            if rank > best_rank:
+                best_rank = rank
                 best_idx = idx
 
         if best_idx is None:
@@ -288,11 +309,52 @@ class FaceRecognitionService:
                 return True
         return False
 
+    @staticmethod
+    def _dedupe_and_limit_embeddings(samples: List[np.ndarray], limit: int = 5) -> List[np.ndarray]:
+        cleaned: List[np.ndarray] = []
+        for sample in samples:
+            normed = FaceRecognitionService._norm(sample)
+            if normed is None:
+                continue
+            if cleaned and float(np.dot(cleaned[-1], normed)) >= 0.9995:
+                continue
+            cleaned.append(normed)
+        if len(cleaned) > limit:
+            cleaned = cleaned[-limit:]
+        return cleaned
+
+    def _append_embedding_sample(self, visitor_db_id: int, embedding: np.ndarray, limit: int = 5) -> Optional[np.ndarray]:
+        if embedding is None:
+            return None
+        samples = list(self._embedding_history.get(visitor_db_id, []))
+        samples.append(embedding)
+        samples = self._dedupe_and_limit_embeddings(samples, limit=limit)
+        if not samples:
+            return None
+        self._embedding_history[visitor_db_id] = samples
+        centroid = self._norm(np.mean(np.stack(samples), axis=0))
+        if centroid is not None:
+            self._embeddings[visitor_db_id] = centroid
+        return centroid
+
+    def _best_similarity_to_visitor(self, embedding: np.ndarray, visitor_db_id: int) -> float:
+        best_score = -1.0
+        samples = self._embedding_history.get(visitor_db_id, [])
+        for sample in samples:
+            score = float(np.dot(embedding, sample))
+            if score > best_score:
+                best_score = score
+        if best_score < 0.0:
+            reference = self._embeddings.get(visitor_db_id)
+            if reference is not None:
+                best_score = float(np.dot(embedding, reference))
+        return best_score
+
     def _match_visitor(self, embedding: np.ndarray, threshold: float):
         best_db_id = None
         best_score = -1.0
-        for db_id, known_embedding in self._embeddings.items():
-            score = float(np.dot(embedding, known_embedding))
+        for db_id in self._embeddings.keys():
+            score = self._best_similarity_to_visitor(embedding, db_id)
             if score > best_score:
                 best_score = score
                 best_db_id = db_id
@@ -320,11 +382,16 @@ class FaceRecognitionService:
             if (now_local - track_last_seen).total_seconds() > 4.0:
                 continue
 
-            reference_embedding = track.get('embedding') or self._embeddings.get(visitor_db_id)
+            reference_embedding = track.get('embedding')
+            if reference_embedding is None:
+                reference_embedding = self._embeddings.get(visitor_db_id)
             if reference_embedding is None:
                 continue
 
             similarity = float(np.dot(embedding, reference_embedding))
+            bank_similarity = self._best_similarity_to_visitor(embedding, visitor_db_id)
+            if bank_similarity > similarity:
+                similarity = bank_similarity
             track_bbox = track.get('bbox')
             iou = self._iou(track_bbox, bbox) if track_bbox is not None else 0.0
 
@@ -380,12 +447,15 @@ class FaceRecognitionService:
         return None, None, -1.0
 
     def _detect_faces(self, frame):
-        faces = self.app.get(frame)
+        try:
+            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        except Exception:
+            rgb = None
+        faces = self.app.get(rgb) if rgb is not None else []
         if faces:
             return faces
         try:
-            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            faces = self.app.get(rgb)
+            faces = self.app.get(frame)
             if faces:
                 return faces
         except Exception:
@@ -691,9 +761,8 @@ class FaceRecognitionService:
                 )
                 continue
 
-            has_pose, yaw_ratio, roll_angle_deg = self._tilt_metrics(face)
-            max_roll = max(5.0, tilt_threshold * 45.0)
-            if has_pose and (yaw_ratio > tilt_threshold or roll_angle_deg > max_roll):
+            has_pose, yaw_ratio, _ = self._tilt_metrics(face)
+            if has_pose and yaw_ratio > tilt_threshold:
                 invalid_bboxes.append(current_bbox)
                 stats['rejected_faces'] += 1
                 self._draw_papp_style_box(
@@ -754,6 +823,54 @@ class FaceRecognitionService:
 
                 self._clear_specific_candidate(candidate)
                 stable_embedding = candidate.get('embedding') if candidate.get('embedding') is not None else emb
+
+                # One more identity check with the stabilized embedding before creating a new visitor.
+                rescue_db_id, rescue_score = self._match_visitor(
+                    stable_embedding,
+                    max(0.35, similarity_threshold - 0.06),
+                )
+                if rescue_db_id is None:
+                    rescue_db_id, rescue_score = self._match_recent_active_track(
+                        stable_embedding,
+                        current_bbox,
+                        now_local,
+                        camera_db_id,
+                        base_threshold=max(0.35, similarity_threshold - 0.06),
+                    )
+
+                if rescue_db_id is not None:
+                    visitor = Visitor.query.get(rescue_db_id)
+                    if visitor is not None:
+                        self._clear_pending_for_bbox(current_bbox, camera_db_id=camera_db_id)
+                        existing_track = self._active_tracks.get(visitor.id)
+                        self._ensure_active_session(visitor, camera_db_id, now_local, event_start=event_start)
+                        track = self._active_tracks.get(visitor.id)
+                        if track is not None:
+                            track['bbox'] = current_bbox
+                            track['last_seen'] = now_local
+                            track['embedding'] = stable_embedding
+                        visitor.last_seen = now_local
+
+                        if existing_track is None:
+                            session_rel_path = self._save_primary_face_image(frame, current_bbox, visitor.visitor_id)
+                            if session_rel_path:
+                                visitor.primary_image_path = session_rel_path
+                                db.session.add(VisitorImage(visitor_id=visitor.id, image_path=session_rel_path))
+                                changed = True
+
+                        if rescue_score < 0.995:
+                            updated = self._append_embedding_sample(visitor.id, stable_embedding, limit=5)
+                            if updated is not None:
+                                visitor.embedding = updated.astype(np.float32).tobytes()
+
+                        label = f"{visitor.visitor_id} [Visitor]"
+                        color = (0, 255, 0)
+                        valid_db_ids.add(visitor.id)
+                        stats['known_visitors'] += 1
+                        changed = True
+                        self._draw_papp_style_box(frame, current_bbox, label, color, thickness=2, font_scale=0.6, text_thickness=2, y_offset=-10)
+                        continue
+
                 visitor_code = self._get_next_visitor_id()
                 image_rel_path = self._save_primary_face_image(frame, current_bbox, visitor_code)
                 visitor = Visitor(
@@ -779,6 +896,7 @@ class FaceRecognitionService:
                 db.session.flush()
 
                 self._embeddings[visitor.id] = stable_embedding
+                self._embedding_history[visitor.id] = [stable_embedding]
                 self._visitor_codes[visitor.id] = visitor_code
                 self._active_tracks[visitor.id] = {
                     'last_seen': now_local,
@@ -798,6 +916,7 @@ class FaceRecognitionService:
                     continue
                 self._clear_pending_for_bbox(current_bbox, camera_db_id=camera_db_id)
 
+                existing_track = self._active_tracks.get(visitor.id)
                 self._ensure_active_session(visitor, camera_db_id, now_local, event_start=event_start)
                 track = self._active_tracks.get(visitor.id)
                 if track is not None:
@@ -805,6 +924,14 @@ class FaceRecognitionService:
                     track['last_seen'] = now_local
                     track['embedding'] = emb
                 visitor.last_seen = now_local
+
+                # Refresh snapshot when visitor re-enters a session so PDF gets a current face-to-shoulder source.
+                if existing_track is None:
+                    session_rel_path = self._save_primary_face_image(frame, current_bbox, visitor.visitor_id)
+                    if session_rel_path:
+                        visitor.primary_image_path = session_rel_path
+                        db.session.add(VisitorImage(visitor_id=visitor.id, image_path=session_rel_path))
+                        changed = True
 
                 # Ensure reports always have a usable source image for face-to-shoulder crop.
                 if not self._visitor_has_usable_image(visitor):
@@ -814,10 +941,9 @@ class FaceRecognitionService:
                         db.session.add(VisitorImage(visitor_id=visitor.id, image_path=fallback_rel_path))
                         changed = True
 
-                if matched_score < 0.98:
-                    updated = self._norm((self._embeddings[visitor.id] * 0.85) + (emb * 0.15))
+                if matched_score < 0.995:
+                    updated = self._append_embedding_sample(visitor.id, emb, limit=5)
                     if updated is not None:
-                        self._embeddings[visitor.id] = updated
                         visitor.embedding = updated.astype(np.float32).tobytes()
                 label = f"{visitor.visitor_id} [Visitor]"
                 color = (0, 255, 0)

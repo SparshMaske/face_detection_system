@@ -9,13 +9,16 @@ from sqlalchemy import and_, or_
 
 
 def _next_visitor_code():
-    max_num = 0
+    used_nums = set()
     for value in db.session.query(Visitor.visitor_id).all():
         visitor_id = value[0] or ''
         match = re.match(r'^ID(\d+)$', visitor_id)
         if match:
-            max_num = max(max_num, int(match.group(1)))
-    return f"ID{max_num + 1}"
+            used_nums.add(int(match.group(1)))
+    next_num = 1
+    while next_num in used_nums:
+        next_num += 1
+    return f"ID{next_num}"
 
 
 def _format_duration(seconds):
