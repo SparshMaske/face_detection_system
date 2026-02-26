@@ -10,13 +10,14 @@ export default function LiveView() {
   const [streamError, setStreamError] = useState('');
   const [streamNonce, setStreamNonce] = useState(Date.now());
   const [eventInfo, setEventInfo] = useState(null);
-  const [processedFrameUrl, setProcessedFrameUrl] = useState('');
+  const [hasProcessedFrame, setHasProcessedFrame] = useState(false);
   const [deviceError, setDeviceError] = useState('');
   const [isFramePending, setIsFramePending] = useState(false);
   const [cameraFacingMode, setCameraFacingMode] = useState('environment');
   const [backendUnavailable, setBackendUnavailable] = useState(false);
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
+  const processedImgRef = useRef(null);
   const localStreamRef = useRef(null);
   const frameUrlRef = useRef('');
 
@@ -25,7 +26,10 @@ export default function LiveView() {
       URL.revokeObjectURL(frameUrlRef.current);
       frameUrlRef.current = '';
     }
-    setProcessedFrameUrl('');
+    if (processedImgRef.current) {
+      processedImgRef.current.removeAttribute('src');
+    }
+    setHasProcessedFrame(false);
   }, []);
 
   const stopLocalCamera = useCallback(
@@ -212,10 +216,13 @@ export default function LiveView() {
         return;
       }
 
-      const maxWidth = isPhoneClient ? 640 : 960;
+      // Keep frame payload lighter to reduce UI lag and network churn.
+      const maxWidth = isPhoneClient ? 480 : 720;
       const scale = Math.min(1, maxWidth / sourceWidth);
-      canvasEl.width = Math.max(2, Math.floor(sourceWidth * scale));
-      canvasEl.height = Math.max(2, Math.floor(sourceHeight * scale));
+      const nextCanvasWidth = Math.max(2, Math.floor(sourceWidth * scale));
+      const nextCanvasHeight = Math.max(2, Math.floor(sourceHeight * scale));
+      if (canvasEl.width !== nextCanvasWidth) canvasEl.width = nextCanvasWidth;
+      if (canvasEl.height !== nextCanvasHeight) canvasEl.height = nextCanvasHeight;
       const ctx = canvasEl.getContext('2d', { alpha: false });
       if (!ctx) {
         scheduleNext(350);
@@ -224,12 +231,13 @@ export default function LiveView() {
       ctx.drawImage(videoEl, 0, 0, canvasEl.width, canvasEl.height);
 
       const blob = await new Promise((resolve) => {
+        const jpegQuality = isPhoneClient ? 0.64 : 0.74;
         if (typeof canvasEl.toBlob === 'function') {
-          canvasEl.toBlob(resolve, 'image/jpeg', 0.82);
+          canvasEl.toBlob(resolve, 'image/jpeg', jpegQuality);
           return;
         }
         try {
-          const dataUrl = canvasEl.toDataURL('image/jpeg', 0.82);
+          const dataUrl = canvasEl.toDataURL('image/jpeg', jpegQuality);
           fetch(dataUrl)
             .then((res) => res.blob())
             .then(resolve)
@@ -247,7 +255,6 @@ export default function LiveView() {
       const url = `/camera/process-client-frame?camera_id=${encodeURIComponent(cameraId)}`;
 
       try {
-        setIsFramePending(true);
         const response = await api.post(url, blob, {
           headers: {
             'Content-Type': 'application/octet-stream',
@@ -272,9 +279,13 @@ export default function LiveView() {
           const nextUrl = URL.createObjectURL(response.data);
           if (frameUrlRef.current) URL.revokeObjectURL(frameUrlRef.current);
           frameUrlRef.current = nextUrl;
-          setProcessedFrameUrl(nextUrl);
+          if (processedImgRef.current) {
+            processedImgRef.current.src = nextUrl;
+          }
           setStreamError('');
           hasRenderedFrame = true;
+          setHasProcessedFrame(true);
+          setIsFramePending(false);
           setBackendUnavailable(false);
           retryDelayMs = isPhoneClient ? 900 : 550;
         }
@@ -288,14 +299,11 @@ export default function LiveView() {
           ) {
             setBackendUnavailable(true);
           }
+          setIsFramePending(false);
           retryDelayMs = Math.min(Math.max(retryDelayMs * 1.35, 900), 5000);
         }
-      } finally {
-        if (!cancelled) {
-          setIsFramePending(false);
-        }
-        scheduleNext();
       }
+      scheduleNext();
     };
 
     const startClientCamera = async () => {
@@ -348,10 +356,12 @@ export default function LiveView() {
             // keep capturing via stream even if explicit play fails on browser policy
           }
         }
+        setIsFramePending(true);
         scheduleNext(120);
       } catch (err) {
         if (!cancelled) {
           setDeviceError('Unable to access this device camera. Allow permission and retry.');
+          setIsFramePending(false);
         }
       }
     };
@@ -439,16 +449,19 @@ export default function LiveView() {
                 muted
                 playsInline
                 style={isSelfieMode ? { transform: 'scaleX(-1)' } : undefined}
-                className={`w-full h-full object-contain ${processedFrameUrl ? 'opacity-20' : ''}`}
+                className={
+                  hasProcessedFrame
+                    ? 'absolute -left-[10000px] top-0 h-[1px] w-[1px] opacity-0 pointer-events-none'
+                    : 'w-full h-full object-contain'
+                }
               />
-              {processedFrameUrl && (
-                <img
-                  src={processedFrameUrl}
-                  alt="Processed Device Feed"
-                  className="absolute inset-0 z-20 w-full h-full object-contain"
-                  style={{ imageRendering: 'auto' }}
-                />
-              )}
+              <img
+                ref={processedImgRef}
+                alt="Processed Device Feed"
+                className={`absolute inset-0 z-20 w-full h-full object-contain ${hasProcessedFrame ? '' : 'hidden'}`}
+                decoding="async"
+                style={{ imageRendering: 'auto' }}
+              />
               <canvas ref={canvasRef} className="hidden" />
             </>
           ) : (
@@ -468,7 +481,7 @@ export default function LiveView() {
           <div className="absolute top-4 right-4 bg-emerald-700/70 text-white px-2 py-1 rounded text-xs">
             AI Bounding Box: On
           </div>
-          {isClientDeviceMode && isFramePending && !processedFrameUrl && !streamError && !deviceError && (
+          {isClientDeviceMode && isFramePending && !hasProcessedFrame && !streamError && !deviceError && (
             <div className="absolute bottom-4 left-1/2 -translate-x-1/2 bg-black/60 text-white text-sm px-3 py-1 rounded">
               Initializing camera stream...
             </div>
