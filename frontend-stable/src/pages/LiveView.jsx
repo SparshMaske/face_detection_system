@@ -20,6 +20,8 @@ export default function LiveView() {
   const processedImgRef = useRef(null);
   const localStreamRef = useRef(null);
   const frameUrlRef = useRef('');
+  const avgRttMsRef = useRef(650);
+  const lastFrameAtRef = useRef(0);
 
   const clearProcessedFrame = useCallback(() => {
     if (frameUrlRef.current) {
@@ -29,6 +31,7 @@ export default function LiveView() {
     if (processedImgRef.current) {
       processedImgRef.current.removeAttribute('src');
     }
+    lastFrameAtRef.current = 0;
     setHasProcessedFrame(false);
   }, []);
 
@@ -145,7 +148,7 @@ export default function LiveView() {
     let cancelled = false;
     let timerId = null;
     let hasRenderedFrame = false;
-    let retryDelayMs = isPhoneClient ? 900 : 520;
+    let retryDelayMs = isPhoneClient ? 320 : 220;
 
     const scheduleNext = (delayMs = retryDelayMs) => {
       if (cancelled) return;
@@ -217,7 +220,7 @@ export default function LiveView() {
       }
 
       // Keep frame payload lighter to reduce UI lag and network churn.
-      const maxWidth = isPhoneClient ? 480 : 720;
+      const maxWidth = isPhoneClient ? 416 : 640;
       const scale = Math.min(1, maxWidth / sourceWidth);
       const nextCanvasWidth = Math.max(2, Math.floor(sourceWidth * scale));
       const nextCanvasHeight = Math.max(2, Math.floor(sourceHeight * scale));
@@ -231,7 +234,7 @@ export default function LiveView() {
       ctx.drawImage(videoEl, 0, 0, canvasEl.width, canvasEl.height);
 
       const blob = await new Promise((resolve) => {
-        const jpegQuality = isPhoneClient ? 0.64 : 0.74;
+        const jpegQuality = isPhoneClient ? 0.6 : 0.7;
         if (typeof canvasEl.toBlob === 'function') {
           canvasEl.toBlob(resolve, 'image/jpeg', jpegQuality);
           return;
@@ -253,6 +256,7 @@ export default function LiveView() {
 
       const cameraId = selectedCamera?.camera_id || 'EVENT_DEFAULT';
       const url = `/camera/process-client-frame?camera_id=${encodeURIComponent(cameraId)}`;
+      const requestStartedAt = performance.now();
 
       try {
         const response = await api.post(url, blob, {
@@ -276,11 +280,35 @@ export default function LiveView() {
         }
 
         if (!cancelled) {
+          const elapsedMs = Math.max(1, performance.now() - requestStartedAt);
+          avgRttMsRef.current = (avgRttMsRef.current * 0.7) + (elapsedMs * 0.3);
+          const minGap = isPhoneClient ? 60 : 35;
+          const maxGap = isPhoneClient ? 240 : 180;
+          retryDelayMs = Math.min(
+            maxGap,
+            Math.max(minGap, Math.round(avgRttMsRef.current * 0.3)),
+          );
+
           const nextUrl = URL.createObjectURL(response.data);
-          if (frameUrlRef.current) URL.revokeObjectURL(frameUrlRef.current);
-          frameUrlRef.current = nextUrl;
           if (processedImgRef.current) {
+            const prevUrl = frameUrlRef.current;
+            processedImgRef.current.onload = () => {
+              if (prevUrl && prevUrl !== nextUrl) {
+                URL.revokeObjectURL(prevUrl);
+              }
+              frameUrlRef.current = nextUrl;
+              lastFrameAtRef.current = Date.now();
+            };
+            processedImgRef.current.onerror = () => {
+              URL.revokeObjectURL(nextUrl);
+              setHasProcessedFrame(false);
+              setStreamError('Processed frame render failed. Retrying...');
+            };
             processedImgRef.current.src = nextUrl;
+          } else {
+            if (frameUrlRef.current) URL.revokeObjectURL(frameUrlRef.current);
+            frameUrlRef.current = nextUrl;
+            lastFrameAtRef.current = Date.now();
           }
           setStreamError('');
           hasRenderedFrame = true;
@@ -300,7 +328,7 @@ export default function LiveView() {
             setBackendUnavailable(true);
           }
           setIsFramePending(false);
-          retryDelayMs = Math.min(Math.max(retryDelayMs * 1.35, 900), 5000);
+          retryDelayMs = Math.min(Math.max(retryDelayMs * 1.25, 350), 3200);
         }
       }
       scheduleNext();
@@ -357,7 +385,7 @@ export default function LiveView() {
           }
         }
         setIsFramePending(true);
-        scheduleNext(120);
+        scheduleNext(80);
       } catch (err) {
         if (!cancelled) {
           setDeviceError('Unable to access this device camera. Allow permission and retry.');
