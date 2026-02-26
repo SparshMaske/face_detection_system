@@ -17,21 +17,18 @@ export default function LiveView() {
   const [backendUnavailable, setBackendUnavailable] = useState(false);
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
-  const processedImgRef = useRef(null);
+  const processedCanvasRef = useRef(null);
   const localStreamRef = useRef(null);
-  const frameUrlRef = useRef('');
   const avgRttMsRef = useRef(650);
-  const lastFrameAtRef = useRef(0);
 
   const clearProcessedFrame = useCallback(() => {
-    if (frameUrlRef.current) {
-      URL.revokeObjectURL(frameUrlRef.current);
-      frameUrlRef.current = '';
+    const outputCanvas = processedCanvasRef.current;
+    if (outputCanvas) {
+      const outputCtx = outputCanvas.getContext('2d');
+      if (outputCtx) {
+        outputCtx.clearRect(0, 0, outputCanvas.width, outputCanvas.height);
+      }
     }
-    if (processedImgRef.current) {
-      processedImgRef.current.removeAttribute('src');
-    }
-    lastFrameAtRef.current = 0;
     setHasProcessedFrame(false);
   }, []);
 
@@ -148,11 +145,59 @@ export default function LiveView() {
     let cancelled = false;
     let timerId = null;
     let hasRenderedFrame = false;
-    let retryDelayMs = isPhoneClient ? 320 : 220;
+    let retryDelayMs = isPhoneClient ? 90 : 70;
 
     const scheduleNext = (delayMs = retryDelayMs) => {
       if (cancelled) return;
       timerId = window.setTimeout(processNextFrame, delayMs);
+    };
+
+    const drawProcessedBlob = async (blob) => {
+      const outputCanvas = processedCanvasRef.current;
+      if (!outputCanvas) return false;
+      const outputCtx = outputCanvas.getContext('2d', { alpha: false, desynchronized: true });
+      if (!outputCtx) return false;
+
+      const viewportWidth = Math.max(2, outputCanvas.clientWidth || 0);
+      const viewportHeight = Math.max(2, outputCanvas.clientHeight || 0);
+      if (outputCanvas.width !== viewportWidth) outputCanvas.width = viewportWidth;
+      if (outputCanvas.height !== viewportHeight) outputCanvas.height = viewportHeight;
+
+      if (typeof createImageBitmap === 'function') {
+        const bitmap = await createImageBitmap(blob);
+        const scale = Math.min(viewportWidth / bitmap.width, viewportHeight / bitmap.height);
+        const drawWidth = Math.max(1, Math.floor(bitmap.width * scale));
+        const drawHeight = Math.max(1, Math.floor(bitmap.height * scale));
+        const dx = Math.floor((viewportWidth - drawWidth) / 2);
+        const dy = Math.floor((viewportHeight - drawHeight) / 2);
+        outputCtx.clearRect(0, 0, viewportWidth, viewportHeight);
+        outputCtx.drawImage(bitmap, dx, dy, drawWidth, drawHeight);
+        bitmap.close();
+        return true;
+      }
+
+      await new Promise((resolve, reject) => {
+        const img = new Image();
+        const localUrl = URL.createObjectURL(blob);
+        img.onload = () => {
+          const scale = Math.min(viewportWidth / img.naturalWidth, viewportHeight / img.naturalHeight);
+          const drawWidth = Math.max(1, Math.floor(img.naturalWidth * scale));
+          const drawHeight = Math.max(1, Math.floor(img.naturalHeight * scale));
+          const dx = Math.floor((viewportWidth - drawWidth) / 2);
+          const dy = Math.floor((viewportHeight - drawHeight) / 2);
+          outputCtx.clearRect(0, 0, viewportWidth, viewportHeight);
+          outputCtx.drawImage(img, dx, dy, drawWidth, drawHeight);
+          URL.revokeObjectURL(localUrl);
+          resolve();
+        };
+        img.onerror = () => {
+          URL.revokeObjectURL(localUrl);
+          reject(new Error('frame_decode_failed'));
+        };
+        img.src = localUrl;
+      });
+
+      return true;
     };
 
     const parseApiErrorMessage = async (err) => {
@@ -220,7 +265,7 @@ export default function LiveView() {
       }
 
       // Keep frame payload lighter to reduce UI lag and network churn.
-      const maxWidth = isPhoneClient ? 416 : 640;
+      const maxWidth = isPhoneClient ? 384 : 560;
       const scale = Math.min(1, maxWidth / sourceWidth);
       const nextCanvasWidth = Math.max(2, Math.floor(sourceWidth * scale));
       const nextCanvasHeight = Math.max(2, Math.floor(sourceHeight * scale));
@@ -234,7 +279,7 @@ export default function LiveView() {
       ctx.drawImage(videoEl, 0, 0, canvasEl.width, canvasEl.height);
 
       const blob = await new Promise((resolve) => {
-        const jpegQuality = isPhoneClient ? 0.6 : 0.7;
+        const jpegQuality = isPhoneClient ? 0.56 : 0.66;
         if (typeof canvasEl.toBlob === 'function') {
           canvasEl.toBlob(resolve, 'image/jpeg', jpegQuality);
           return;
@@ -282,34 +327,14 @@ export default function LiveView() {
         if (!cancelled) {
           const elapsedMs = Math.max(1, performance.now() - requestStartedAt);
           avgRttMsRef.current = (avgRttMsRef.current * 0.7) + (elapsedMs * 0.3);
-          const minGap = isPhoneClient ? 60 : 35;
-          const maxGap = isPhoneClient ? 240 : 180;
+          const minGap = isPhoneClient ? 40 : 25;
+          const maxGap = isPhoneClient ? 110 : 95;
           retryDelayMs = Math.min(
             maxGap,
-            Math.max(minGap, Math.round(avgRttMsRef.current * 0.3)),
+            Math.max(minGap, Math.round(avgRttMsRef.current * 0.12)),
           );
 
-          const nextUrl = URL.createObjectURL(response.data);
-          if (processedImgRef.current) {
-            const prevUrl = frameUrlRef.current;
-            processedImgRef.current.onload = () => {
-              if (prevUrl && prevUrl !== nextUrl) {
-                URL.revokeObjectURL(prevUrl);
-              }
-              frameUrlRef.current = nextUrl;
-              lastFrameAtRef.current = Date.now();
-            };
-            processedImgRef.current.onerror = () => {
-              URL.revokeObjectURL(nextUrl);
-              setHasProcessedFrame(false);
-              setStreamError('Processed frame render failed. Retrying...');
-            };
-            processedImgRef.current.src = nextUrl;
-          } else {
-            if (frameUrlRef.current) URL.revokeObjectURL(frameUrlRef.current);
-            frameUrlRef.current = nextUrl;
-            lastFrameAtRef.current = Date.now();
-          }
+          await drawProcessedBlob(response.data);
           setStreamError('');
           hasRenderedFrame = true;
           setHasProcessedFrame(true);
@@ -328,7 +353,7 @@ export default function LiveView() {
             setBackendUnavailable(true);
           }
           setIsFramePending(false);
-          retryDelayMs = Math.min(Math.max(retryDelayMs * 1.25, 350), 3200);
+          retryDelayMs = Math.min(Math.max(retryDelayMs * 1.3, 220), 2800);
         }
       }
       scheduleNext();
@@ -483,12 +508,10 @@ export default function LiveView() {
                     : 'w-full h-full object-contain'
                 }
               />
-              <img
-                ref={processedImgRef}
-                alt="Processed Device Feed"
-                className={`absolute inset-0 z-20 w-full h-full object-contain ${hasProcessedFrame ? '' : 'hidden'}`}
-                decoding="async"
-                style={{ imageRendering: 'auto' }}
+              <canvas
+                ref={processedCanvasRef}
+                className={`absolute inset-0 z-20 w-full h-full ${hasProcessedFrame ? '' : 'hidden'}`}
+                aria-label="Processed Device Feed"
               />
               <canvas ref={canvasRef} className="hidden" />
             </>
