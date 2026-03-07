@@ -67,6 +67,32 @@ def _format_duration(seconds: float) -> str:
     return f"{hours:02d}:{minutes:02d}:{secs:02d}"
 
 
+def _safe_token(raw_value: str) -> str:
+    text = str(raw_value or '').strip()
+    if not text:
+        return 'event'
+    cleaned = []
+    for ch in text:
+        if ch.isalnum() or ch in ('-', '_'):
+            cleaned.append(ch)
+        elif ch.isspace():
+            cleaned.append('_')
+        else:
+            cleaned.append('_')
+    normalized = ''.join(cleaned).strip('_')
+    return normalized or 'event'
+
+
+def _event_artifacts_dir(event_name: str) -> str:
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    reports_dir = os.path.join(base_dir, '..', 'reports')
+    events_dir = os.path.join(reports_dir, 'events')
+    os.makedirs(events_dir, exist_ok=True)
+    event_dir = os.path.join(events_dir, _safe_token(event_name))
+    os.makedirs(event_dir, exist_ok=True)
+    return event_dir
+
+
 def _history_path():
     base_dir = os.path.dirname(os.path.abspath(__file__))
     reports_dir = os.path.join(base_dir, '..', 'reports')
@@ -874,6 +900,15 @@ def export_completed_event_csv(event_id):
 
     safe_event_name = str(event_record.get('event_name') or 'event').strip().replace(' ', '_')
     filename = f"{safe_event_name}_{event_record.get('event_id')}_results.csv"
+    event_name = event_record.get('event_name') or 'event'
+    event_folder = _event_artifacts_dir(event_name)
+    event_csv_path = os.path.join(event_folder, filename)
+    try:
+        with open(event_csv_path, 'wb') as fp:
+            fp.write(csv_bytes)
+    except Exception:
+        # CSV download should still work even if local archival fails.
+        pass
 
     return Response(
         csv_bytes,

@@ -1,9 +1,12 @@
 import os
+import csv
 from datetime import datetime
 from glob import glob
+from typing import List
 
 from flask import current_app
 from models.visitor import Visitor, VisitorSession
+from models.staff import Staff
 from sqlalchemy import or_
 import cv2
 
@@ -59,6 +62,118 @@ class ReportGenerator:
         hours, remainder = divmod(total, 3600)
         minutes, secs = divmod(remainder, 60)
         return f"{hours:02d}:{minutes:02d}:{secs:02d}"
+
+    @staticmethod
+    def _sanitize_token(raw_value):
+        text = str(raw_value or '').strip()
+        if not text:
+            return 'event'
+        cleaned = []
+        for ch in text:
+            if ch.isalnum() or ch in ('-', '_'):
+                cleaned.append(ch)
+            elif ch.isspace():
+                cleaned.append('_')
+            else:
+                cleaned.append('_')
+        normalized = ''.join(cleaned).strip('_')
+        return normalized or 'event'
+
+    def _event_artifacts_dir(self, event_name):
+        safe_event_name = self._sanitize_token(event_name)
+        events_root = os.path.join(self.reports_dir, 'events')
+        os.makedirs(events_root, exist_ok=True)
+        event_dir = os.path.join(events_root, safe_event_name)
+        os.makedirs(event_dir, exist_ok=True)
+        return event_dir
+
+    def _collect_management_payload(self, event_end: datetime) -> List[dict]:
+        query = Staff.query.order_by(Staff.name.asc())
+        if event_end is not None:
+            query = query.filter(Staff.created_at <= event_end)
+        rows = []
+        for staff in query.all():
+            rows.append({
+                'staff_id': staff.staff_id or '',
+                'name': staff.name or '',
+                'department': staff.department or '-',
+                'position': staff.position or '-',
+                'status': 'Active' if staff.is_active else 'Inactive',
+                'created_at': staff.created_at.strftime('%Y-%m-%d %H:%M:%S') if staff.created_at else '',
+            })
+        return rows
+
+    def _save_event_data_csv(
+        self,
+        event_dir,
+        event_name,
+        event_id,
+        start_date,
+        end_date,
+        visitors_payload,
+        management_payload,
+    ):
+        safe_event_name = self._sanitize_token(event_name)
+        suffix = self._sanitize_token(event_id) if event_id else datetime.now().strftime('%Y%m%d_%H%M%S')
+        csv_filename = f"{safe_event_name}_{suffix}_data.csv"
+        csv_path = os.path.join(event_dir, csv_filename)
+
+        with open(csv_path, 'w', encoding='utf-8', newline='') as fp:
+            writer = csv.writer(fp)
+            writer.writerow([
+                'record_type',
+                'event_name',
+                'event_id',
+                'period_start',
+                'period_end',
+                'id',
+                'name',
+                'department',
+                'position',
+                'status',
+                'date',
+                'first_in_time',
+                'last_out_time',
+                'duration',
+            ])
+
+            for visitor_item in visitors_payload:
+                writer.writerow([
+                    'visitor',
+                    event_name or '',
+                    event_id or '',
+                    start_date,
+                    end_date,
+                    visitor_item.get('visitor_id', ''),
+                    '',
+                    '',
+                    '',
+                    '',
+                    visitor_item.get('date', ''),
+                    visitor_item.get('first_in', ''),
+                    visitor_item.get('last_out', ''),
+                    visitor_item.get('duration', ''),
+                ])
+
+            for staff_item in management_payload:
+                writer.writerow([
+                    'management',
+                    event_name or '',
+                    event_id or '',
+                    start_date,
+                    end_date,
+                    staff_item.get('staff_id', ''),
+                    staff_item.get('name', ''),
+                    staff_item.get('department', ''),
+                    staff_item.get('position', ''),
+                    staff_item.get('status', ''),
+                    '',
+                    '',
+                    '',
+                    '',
+                ])
+
+        return csv_path
 
     def _resolve_visitor_image_path(self, visitor, prefer_first=False, reference_time=None):
         upload_root = current_app.config.get('UPLOAD_FOLDER')
@@ -247,7 +362,7 @@ class ReportGenerator:
 
         pdf.output(filepath)
 
-    def _build_event_visitors_with_reportlab(self, filepath, title_text, subtitle_text, visitors_payload):
+    def _build_event_visitors_with_reportlab(self, filepath, title_text, subtitle_text, visitors_payload, management_payload):
         doc = SimpleDocTemplate(filepath, pagesize=A4, leftMargin=16, rightMargin=16, topMargin=18, bottomMargin=18)
         styles = getSampleStyleSheet()
         card_text_style = styles['Normal'].clone('CardText')
@@ -256,13 +371,47 @@ class ReportGenerator:
         card_text_style.leading = 8
         elements = []
 
+        elements.append(Paragraph(title_text, styles['Title']))
+        elements.append(Paragraph(subtitle_text, styles['Normal']))
+        elements.append(Spacer(1, 10))
+
+        elements.append(Paragraph("Management", styles['Heading2']))
+        if management_payload:
+            mgmt_rows = [['Staff ID', 'Name', 'Department', 'Position', 'Status', 'Added']]
+            for item in management_payload:
+                mgmt_rows.append([
+                    item.get('staff_id', ''),
+                    item.get('name', ''),
+                    item.get('department', '-'),
+                    item.get('position', '-'),
+                    item.get('status', ''),
+                    item.get('created_at', ''),
+                ])
+            mgmt_table = Table(mgmt_rows, colWidths=[64, 96, 92, 92, 52, 110])
+            mgmt_table.setStyle(TableStyle([
+                ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#1f2937')),
+                ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+                ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor('#6b7280')),
+                ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                ('FONTSIZE', (0, 0), (-1, 0), 8),
+                ('FONTSIZE', (0, 1), (-1, -1), 7),
+                ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.HexColor('#f8fafc'), colors.HexColor('#eef2f7')]),
+                ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+            ]))
+            elements.append(mgmt_table)
+        else:
+            elements.append(Paragraph("No staff data available for this event window.", styles['Normal']))
+
+        elements.append(Spacer(1, 10))
+        elements.append(Paragraph("Visitor Summary", styles['Heading2']))
+        elements.append(Spacer(1, 6))
+
         if not visitors_payload:
-            elements.append(Paragraph(title_text, styles['Title']))
-            elements.append(Paragraph(subtitle_text, styles['Normal']))
-            elements.append(Spacer(1, 12))
             elements.append(Paragraph("No visitors found in selected window.", styles['Normal']))
             doc.build(elements)
             return
+
+        elements.append(PageBreak())
 
         def _card_for_visitor(item):
             body = []
@@ -297,9 +446,9 @@ class ReportGenerator:
             if start > 0:
                 elements.append(PageBreak())
 
-            elements.append(Paragraph(title_text, styles['Title']))
+            elements.append(Paragraph(f"{title_text} - Visitors", styles['Title']))
             elements.append(Paragraph(subtitle_text, styles['Normal']))
-            elements.append(Spacer(1, 10))
+            elements.append(Spacer(1, 8))
 
             chunk = visitors_payload[start:start + page_size]
             row_data = []
@@ -326,33 +475,76 @@ class ReportGenerator:
 
         doc.build(elements)
 
-    def _build_event_visitors_with_fpdf(self, filepath, title_text, subtitle_text, visitors_payload):
+    def _build_event_visitors_with_fpdf(self, filepath, title_text, subtitle_text, visitors_payload, management_payload):
         pdf = FPDF()
         pdf.set_auto_page_break(auto=False)
 
+        pdf.add_page()
+        pdf.set_font('Arial', 'B', 16)
+        pdf.cell(0, 10, self._safe_text(title_text), ln=1)
+        pdf.set_font('Arial', '', 10)
+        pdf.multi_cell(0, 6, self._safe_text(subtitle_text))
+        pdf.ln(2)
+
+        pdf.set_font('Arial', 'B', 12)
+        pdf.cell(0, 7, 'Management', ln=1)
+        pdf.set_font('Arial', 'B', 8)
+        headers = ['Staff ID', 'Name', 'Department', 'Position', 'Status']
+        widths = [26, 48, 42, 42, 26]
+        for idx, header in enumerate(headers):
+            pdf.cell(widths[idx], 6, self._safe_text(header), border=1)
+        pdf.ln(6)
+        pdf.set_font('Arial', '', 8)
+        if management_payload:
+            for row in management_payload:
+                values = [
+                    row.get('staff_id', ''),
+                    row.get('name', ''),
+                    row.get('department', '-'),
+                    row.get('position', '-'),
+                    row.get('status', ''),
+                ]
+                for idx, value in enumerate(values):
+                    pdf.cell(widths[idx], 6, self._safe_text(value), border=1)
+                pdf.ln(6)
+                if pdf.get_y() > 260:
+                    pdf.add_page()
+                    pdf.set_font('Arial', 'B', 8)
+                    for idx, header in enumerate(headers):
+                        pdf.cell(widths[idx], 6, self._safe_text(header), border=1)
+                    pdf.ln(6)
+                    pdf.set_font('Arial', '', 8)
+        else:
+            pdf.cell(0, 6, 'No staff data available for this event window.', ln=1)
+
         if not visitors_payload:
-            pdf.add_page()
-            pdf.set_font('Arial', 'B', 16)
-            pdf.cell(0, 10, self._safe_text(title_text), ln=1)
-            pdf.set_font('Arial', '', 11)
-            pdf.cell(0, 8, self._safe_text(subtitle_text), ln=1)
-            pdf.ln(6)
+            pdf.ln(4)
+            pdf.set_font('Arial', 'B', 11)
+            pdf.cell(0, 8, 'Visitor Summary', ln=1)
             pdf.set_font('Arial', '', 11)
             pdf.cell(0, 8, 'No visitors found in selected window.', ln=1)
             pdf.output(filepath)
             return
+
+        pdf.add_page()
+        pdf.set_font('Arial', 'B', 12)
+        pdf.cell(0, 7, self._safe_text(f"{title_text} - Visitors"), ln=1)
+        pdf.set_font('Arial', '', 8)
+        pdf.multi_cell(0, 4, self._safe_text(subtitle_text))
+        pdf.ln(1)
 
         page_index = -1
         for idx, visitor_item in enumerate(visitors_payload):
             slot = idx % 16
             if slot == 0:
                 page_index += 1
-                pdf.add_page()
-                pdf.set_font('Arial', 'B', 12)
-                pdf.cell(0, 7, self._safe_text(title_text), ln=1)
-                pdf.set_font('Arial', '', 8)
-                pdf.multi_cell(0, 4, self._safe_text(subtitle_text))
-                pdf.ln(1)
+                if idx > 0:
+                    pdf.add_page()
+                    pdf.set_font('Arial', 'B', 12)
+                    pdf.cell(0, 7, self._safe_text(f"{title_text} - Visitors"), ln=1)
+                    pdf.set_font('Arial', '', 8)
+                    pdf.multi_cell(0, 4, self._safe_text(subtitle_text))
+                    pdf.ln(1)
 
             row = slot // 4
             col = slot % 4
@@ -557,16 +749,54 @@ class ReportGenerator:
                 })
 
         visitors_payload.sort(key=lambda item: item['first_in'])
+        management_payload = self._collect_management_payload(e_date)
+
         title_text = f"Visitor Report ({report_type.title()})"
         subtitle_text = f"Period: {start_date} to {end_date}"
         if event_name:
             subtitle_text = f"Event: {event_name} | {subtitle_text}"
         if event_id:
             subtitle_text = f"{subtitle_text} | Event ID: {event_id}"
+        subtitle_text = f"{subtitle_text} | Visitors: {len(visitors_payload)}"
+
+        event_dir = None
+        if event_name:
+            event_dir = self._event_artifacts_dir(event_name)
         if REPORTLAB_AVAILABLE:
-            self._build_event_visitors_with_reportlab(filepath, title_text, subtitle_text, visitors_payload)
+            self._build_event_visitors_with_reportlab(
+                filepath,
+                title_text,
+                subtitle_text,
+                visitors_payload,
+                management_payload,
+            )
         else:
-            self._build_event_visitors_with_fpdf(filepath, title_text, subtitle_text, visitors_payload)
+            self._build_event_visitors_with_fpdf(
+                filepath,
+                title_text,
+                subtitle_text,
+                visitors_payload,
+                management_payload,
+            )
+
+        if event_dir:
+            try:
+                event_pdf_path = os.path.join(event_dir, os.path.basename(filepath))
+                if event_pdf_path != filepath:
+                    with open(filepath, 'rb') as src, open(event_pdf_path, 'wb') as dst:
+                        dst.write(src.read())
+                self._save_event_data_csv(
+                    event_dir=event_dir,
+                    event_name=event_name,
+                    event_id=event_id,
+                    start_date=start_date,
+                    end_date=end_date,
+                    visitors_payload=visitors_payload,
+                    management_payload=management_payload,
+                )
+            except Exception:
+                # Report download should still succeed even if local archival fails.
+                pass
 
         return filepath
 

@@ -37,6 +37,7 @@ class Config:
     TILT_THRESHOLD = float(os.getenv('TILT_THRESHOLD', 0.25))
     UNKNOWN_FACE_MIN_FRAMES = int(os.getenv('UNKNOWN_FACE_MIN_FRAMES', 3))
     SESSION_GRACE_PERIOD = float(os.getenv('SESSION_GRACE_PERIOD', 2.0))
+    MAX_VISITOR_IDENTITIES = int(os.getenv('MAX_VISITOR_IDENTITIES', 99999))
     
     # CORS
     CORS_ORIGINS = ["http://localhost:3000", "http://127.0.0.1:3000"]

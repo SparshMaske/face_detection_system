@@ -170,6 +170,18 @@ export default function Settings() {
             />
           </div>
 
+          <div>
+            <label className="block text-sm font-medium mb-1">Max Visitor Identities</label>
+            <input
+              type="number"
+              min={1}
+              max={99999}
+              className="input"
+              value={settings.max_visitor_identities || 99999}
+              onChange={(e) => handleChange('max_visitor_identities', Number(e.target.value))}
+            />
+          </div>
+
           <button onClick={handleSave} className="btn btn-primary" disabled={saving}>
             {saving ? 'Saving...' : 'Save Changes'}
           </button>
@@ -184,6 +196,7 @@ export default function Settings() {
           <div>Blur Threshold: <strong>{runtimeSettings.blur_threshold ?? 'N/A'}</strong></div>
           <div>Tilt Threshold: <strong>{runtimeSettings.tilt_threshold ?? 'N/A'}</strong></div>
           <div>Min Face Area: <strong>{runtimeSettings.min_face_area ?? 'N/A'}</strong></div>
+          <div>Max Visitor Identities: <strong>{runtimeSettings.max_visitor_identities ?? 'N/A'}</strong></div>
         </div>
       </Card>
     </div>

@@ -1003,6 +1003,13 @@ class FaceRecognitionService:
                         self._draw_papp_style_box(frame, current_bbox, label, color, thickness=1, font_scale=0.55, text_thickness=1, y_offset=-10)
                         continue
 
+                max_identities = int(cfg.get('MAX_VISITOR_IDENTITIES', 99999) or 99999)
+                if max_identities > 0 and len(self._embeddings) >= max_identities:
+                    label = f"Visitor cap reached ({max_identities})"
+                    color = (0, 140, 255)
+                    self._draw_papp_style_box(frame, current_bbox, label, color, thickness=1, font_scale=0.55, text_thickness=1, y_offset=-10)
+                    continue
+
                 visitor_code = self._get_next_visitor_id()
                 image_rel_path = self._save_primary_face_image(frame, current_bbox, visitor_code)
                 visitor = Visitor(

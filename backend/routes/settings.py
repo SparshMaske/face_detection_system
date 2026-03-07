@@ -40,6 +40,11 @@ DEFAULT_SETTINGS = {
         'value_type': 'int',
         'description': 'Minimum face area in pixels',
     },
+    'max_visitor_identities': {
+        'value': 99999,
+        'value_type': 'int',
+        'description': 'Maximum number of unique visitor identities allowed in recognition memory',
+    },
 }
 
 CONFIG_KEY_MAP = {
@@ -50,6 +55,7 @@ CONFIG_KEY_MAP = {
     'blur_threshold': ('BLUR_THRESHOLD', float),
     'tilt_threshold': ('TILT_THRESHOLD', float),
     'min_face_area': ('MIN_FACE_AREA', int),
+    'max_visitor_identities': ('MAX_VISITOR_IDENTITIES', int),
 }
 
 
