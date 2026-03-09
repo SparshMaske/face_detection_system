@@ -247,6 +247,10 @@ def _record_window(record: Dict) -> Tuple[Optional[datetime], Optional[datetime]
     return _parse_datetime_optional(record.get('start_time')), _parse_datetime_optional(record.get('end_time'))
 
 
+def _windows_overlap(start_a: datetime, end_a: datetime, start_b: datetime, end_b: datetime) -> bool:
+    return start_a < end_b and end_a > start_b
+
+
 def _serialize_record(record: Dict) -> Dict:
     return {
         'event_id': record.get('event_id'),
@@ -591,15 +595,32 @@ def schedule_event():
     if end_time <= start_time:
         return jsonify({'error': 'end_time must be after start_time'}), 400
 
-    camera, camera_error = _resolve_camera(camera_mode, rtsp_url=rtsp_url, existing_camera_id=existing_camera_id)
-    if camera_error:
-        return jsonify({'error': camera_error}), 400
-
     with _EVENT_LOCK:
         records = _load_event_registry()
         active_record = _sync_registry_status(records)
         if active_record is not None:
             return jsonify({'error': 'An event is already active. Stop the active event before scheduling another.'}), 409
+
+        for existing in records:
+            status = str(existing.get('status') or '').lower()
+            if status not in ('scheduled', 'active'):
+                continue
+            existing_start, existing_end = _record_window(existing)
+            if not existing_start or not existing_end:
+                continue
+            if _windows_overlap(start_time, end_time, existing_start, existing_end):
+                conflict_name = (existing.get('event_name') or '').strip() or existing.get('event_id') or 'another event'
+                return jsonify({
+                    'error': f"Event '{conflict_name}' is already scheduled in this time window."
+                }), 409
+
+        camera, camera_error = _resolve_camera(
+            camera_mode,
+            rtsp_url=rtsp_url,
+            existing_camera_id=existing_camera_id,
+        )
+        if camera_error:
+            return jsonify({'error': camera_error}), 400
 
         now = _now()
         event_id = _make_event_id()
