@@ -138,6 +138,78 @@ def _apply_capture_settings(cap, camera):
         pass
 
 
+def _source_candidates(source):
+    candidates = []
+    if isinstance(source, int):
+        candidates.append(source)
+    else:
+        raw = str(source).strip()
+        if raw == '':
+            candidates.append(0)
+        elif raw.isdigit():
+            candidates.append(int(raw))
+            candidates.append(raw)
+        else:
+            candidates.append(raw)
+
+    # Preserve order, remove duplicates.
+    uniq = []
+    seen = set()
+    for item in candidates:
+        key = (type(item).__name__, str(item))
+        if key in seen:
+            continue
+        seen.add(key)
+        uniq.append(item)
+    return uniq
+
+
+def _open_capture(camera, source):
+    """
+    Open camera stream with backend fallbacks.
+    Helps on platforms where CAP_ANY fails for USB cameras.
+    """
+    backends = [cv2.CAP_ANY]
+    for name in ('CAP_AVFOUNDATION', 'CAP_V4L2', 'CAP_DSHOW', 'CAP_MSMF'):
+        if hasattr(cv2, name):
+            backends.append(getattr(cv2, name))
+    # Preserve backend order and dedupe.
+    ordered_backends = []
+    seen = set()
+    for b in backends:
+        if b in seen:
+            continue
+        seen.add(b)
+        ordered_backends.append(b)
+
+    last_err = 'Could not open camera stream'
+    for candidate in _source_candidates(source):
+        for backend in ordered_backends:
+            cap = None
+            try:
+                cap = cv2.VideoCapture(candidate, backend)
+            except TypeError:
+                # Some OpenCV builds may reject explicit backend argument.
+                try:
+                    cap = cv2.VideoCapture(candidate)
+                except Exception as exc:
+                    last_err = f'Open exception: {exc}'
+                    cap = None
+            except Exception as exc:
+                last_err = f'Open exception: {exc}'
+                cap = None
+
+            if cap is None:
+                continue
+
+            _apply_capture_settings(cap, camera)
+            if cap.isOpened():
+                return cap, ''
+            cap.release()
+
+    return None, last_err
+
+
 def _background_worker_loop(app):
     fr_service = None
     active_camera_id = None
@@ -219,19 +291,19 @@ def _background_worker_loop(app):
         if cap is None or active_camera_id != selected_camera_id or active_source != source_token:
             if cap is not None:
                 cap.release()
-            cap = cv2.VideoCapture(source)
-            _apply_capture_settings(cap, cam)
+            cap, open_err = _open_capture(cam, source)
             active_camera_id = selected_camera_id
             active_source = source_token
-            if not cap.isOpened():
+            if cap is None or not cap.isOpened():
                 _set_runtime(
                     selected_camera_id,
                     processing_active=True,
                     source='background',
                     camera_online=False,
-                    last_error='Could not open camera stream',
+                    last_error=open_err or 'Could not open camera stream',
                 )
-                cap.release()
+                if cap is not None:
+                    cap.release()
                 cap = None
                 time.sleep(0.9)
                 continue
@@ -430,18 +502,18 @@ def stream_feed(camera_id):
                     continue
 
                 if cap is None:
-                    cap = cv2.VideoCapture(source)
-                    _apply_capture_settings(cap, camera)
-                    if not cap.isOpened():
+                    cap, open_err = _open_capture(camera, source)
+                    if cap is None or not cap.isOpened():
                         current_app.logger.warning("Could not open camera stream: %s", source)
                         _set_runtime(
                             camera.camera_id,
                             source='live-stream',
                             processing_active=True,
                             camera_online=False,
-                            last_error='Could not open camera stream',
+                            last_error=open_err or 'Could not open camera stream',
                         )
-                        cap.release()
+                        if cap is not None:
+                            cap.release()
                         cap = None
                         # Give the background worker time to release/reopen if needed.
                         time.sleep(0.45)
@@ -627,6 +699,16 @@ def runtime_status():
     runtime['camera_type'] = cam.camera_type
     runtime['camera_name'] = cam.name
     runtime['camera_online'] = bool(runtime.get('camera_online')) if runtime.get('camera_online') is not None else bool(cam.is_online)
+    # If no fresh frame has arrived recently, avoid displaying stale FPS values.
+    try:
+        last_frame_at = runtime.get('last_frame_at')
+        if last_frame_at:
+            last_dt = datetime.datetime.fromisoformat(str(last_frame_at))
+            age_sec = (datetime.datetime.utcnow() - last_dt).total_seconds()
+            if age_sec > 3.0:
+                runtime['fps'] = 0.0
+    except Exception:
+        runtime['fps'] = float(runtime.get('fps') or 0.0)
 
     try:
         from routes.events import is_event_active_for_camera
