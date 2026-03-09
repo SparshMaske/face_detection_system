@@ -1,6 +1,7 @@
 import cv2
 import datetime
-from threading import Lock
+import time
+from threading import Event, Lock, Thread
 
 import numpy as np
 from flask import request, jsonify, Response, stream_with_context, current_app
@@ -11,6 +12,253 @@ from models.camera import Camera
 
 _CLIENT_CLEANUP_TIMES = {}
 _CLIENT_CLEANUP_LOCK = Lock()
+_VIEWER_COUNTS = {}
+_VIEWER_LOCK = Lock()
+_RUNTIME_STATS = {}
+_RUNTIME_LOCK = Lock()
+_BACKGROUND_LOCK = Lock()
+_BACKGROUND_THREAD = None
+_BACKGROUND_STOP = Event()
+
+
+def _default_runtime(camera_id):
+    return {
+        'camera_id': camera_id,
+        'fps': 0.0,
+        'window_start': time.monotonic(),
+        'window_frames': 0,
+        'last_frame_at': None,
+        'source': 'idle',
+        'processing_active': False,
+        'camera_online': None,
+        'last_error': '',
+        'viewers': 0,
+        'updated_at': datetime.datetime.utcnow().isoformat(),
+    }
+
+
+def _set_runtime(camera_id, **kwargs):
+    with _RUNTIME_LOCK:
+        item = _RUNTIME_STATS.setdefault(camera_id, _default_runtime(camera_id))
+        for key, value in kwargs.items():
+            if value is not None:
+                item[key] = value
+        item['updated_at'] = datetime.datetime.utcnow().isoformat()
+        return dict(item)
+
+
+def _mark_camera_frame(camera_id, source='unknown', processing_active=None, camera_online=True, last_error=''):
+    with _RUNTIME_LOCK:
+        item = _RUNTIME_STATS.setdefault(camera_id, _default_runtime(camera_id))
+        now_mono = time.monotonic()
+        item['window_frames'] = int(item.get('window_frames', 0)) + 1
+        start = float(item.get('window_start', now_mono))
+        elapsed = max(0.0001, now_mono - start)
+        if elapsed >= 1.0:
+            current_fps = float(item.get('window_frames', 0)) / elapsed
+            prior_fps = float(item.get('fps', 0.0) or 0.0)
+            item['fps'] = current_fps if prior_fps <= 0 else ((prior_fps * 0.6) + (current_fps * 0.4))
+            item['window_start'] = now_mono
+            item['window_frames'] = 0
+
+        item['last_frame_at'] = datetime.datetime.utcnow().isoformat()
+        item['source'] = source
+        item['camera_online'] = camera_online
+        item['last_error'] = last_error or ''
+        if processing_active is not None:
+            item['processing_active'] = bool(processing_active)
+        item['updated_at'] = datetime.datetime.utcnow().isoformat()
+
+
+def _viewer_count(camera_id):
+    with _VIEWER_LOCK:
+        return int(_VIEWER_COUNTS.get(camera_id, 0) or 0)
+
+
+def _bump_viewers(camera_id, delta):
+    with _VIEWER_LOCK:
+        current = int(_VIEWER_COUNTS.get(camera_id, 0) or 0)
+        next_count = max(0, current + int(delta))
+        _VIEWER_COUNTS[camera_id] = next_count
+    _set_runtime(camera_id, viewers=next_count)
+    return next_count
+
+
+def _background_worker_loop(app):
+    fr_service = None
+    active_camera_id = None
+    active_source = None
+    cap = None
+    last_inactive_cleanup = datetime.datetime.min
+
+    while not _BACKGROUND_STOP.is_set():
+        try:
+            with app.app_context():
+                from routes.events import get_event_state_snapshot
+                event_state = get_event_state_snapshot(sync=True) or {}
+                workflow_active = bool(event_state.get('workflow_active'))
+                selected_camera_id = str(event_state.get('selected_camera_id') or '').strip()
+        except Exception as exc:
+            app.logger.warning("Background camera worker: failed to read event state: %s", exc)
+            time.sleep(0.4)
+            continue
+
+        if not workflow_active or not selected_camera_id:
+            if active_camera_id:
+                _set_runtime(active_camera_id, processing_active=False, source='idle')
+            if cap is not None:
+                cap.release()
+                cap = None
+            active_camera_id = None
+            active_source = None
+            time.sleep(0.25)
+            continue
+
+        # Avoid opening the same camera twice; live stream endpoint already processes frames.
+        if _viewer_count(selected_camera_id) > 0:
+            _set_runtime(selected_camera_id, processing_active=True, source='live-view')
+            if cap is not None:
+                cap.release()
+                cap = None
+            active_camera_id = None
+            active_source = None
+            time.sleep(0.2)
+            continue
+
+        with app.app_context():
+            cam = Camera.query.filter_by(camera_id=selected_camera_id).first()
+
+        if cam is None:
+            _set_runtime(
+                selected_camera_id,
+                processing_active=False,
+                source='background',
+                camera_online=False,
+                last_error='Camera not found',
+            )
+            if cap is not None:
+                cap.release()
+                cap = None
+            active_camera_id = None
+            active_source = None
+            time.sleep(0.5)
+            continue
+
+        if str(cam.camera_type or '').lower() == 'browser':
+            # Browser cameras require client-provided frames; no backend capture source exists.
+            _set_runtime(
+                selected_camera_id,
+                processing_active=True,
+                source='browser-client',
+                camera_online=True,
+                last_error='',
+            )
+            if cap is not None:
+                cap.release()
+                cap = None
+            active_camera_id = None
+            active_source = None
+            time.sleep(0.2)
+            continue
+
+        if fr_service is None:
+            try:
+                from services.face_recognition import FaceRecognitionService
+                fr_service = FaceRecognitionService()
+            except Exception as exc:
+                app.logger.warning("Background camera worker: face model unavailable: %s", exc)
+                fr_service = None
+
+        stream_url = (cam.stream_url or '0').strip()
+        source = 0 if stream_url in ('', '0') else stream_url
+        source_token = str(source)
+
+        if cap is None or active_camera_id != selected_camera_id or active_source != source_token:
+            if cap is not None:
+                cap.release()
+            cap = cv2.VideoCapture(source)
+            active_camera_id = selected_camera_id
+            active_source = source_token
+            if not cap.isOpened():
+                _set_runtime(
+                    selected_camera_id,
+                    processing_active=True,
+                    source='background',
+                    camera_online=False,
+                    last_error='Could not open camera stream',
+                )
+                cap.release()
+                cap = None
+                time.sleep(0.9)
+                continue
+            _set_runtime(
+                selected_camera_id,
+                processing_active=True,
+                source='background',
+                camera_online=True,
+                last_error='',
+            )
+
+        ret, frame = cap.read()
+        if not ret or frame is None:
+            _set_runtime(
+                selected_camera_id,
+                processing_active=True,
+                source='background',
+                camera_online=False,
+                last_error='Failed to read camera frame',
+            )
+            cap.release()
+            cap = None
+            time.sleep(0.35)
+            continue
+
+        try:
+            with app.app_context():
+                frame, last_inactive_cleanup, meta = _apply_event_processing(
+                    frame,
+                    cam,
+                    fr_service,
+                    last_inactive_cleanup,
+                )
+            _mark_camera_frame(
+                selected_camera_id,
+                source='background',
+                processing_active=bool(meta.get('event_active')),
+                camera_online=True,
+                last_error='',
+            )
+        except Exception as exc:
+            _set_runtime(
+                selected_camera_id,
+                processing_active=True,
+                source='background',
+                camera_online=True,
+                last_error=f'Processing error: {exc}',
+            )
+
+        fps_limit = int(getattr(cam, 'fps_limit', 10) or 10)
+        target_fps = max(4, min(15, fps_limit))
+        time.sleep(max(0.02, 1.0 / float(target_fps)))
+
+    if cap is not None:
+        cap.release()
+
+
+def _ensure_background_worker():
+    global _BACKGROUND_THREAD
+    with _BACKGROUND_LOCK:
+        if _BACKGROUND_THREAD and _BACKGROUND_THREAD.is_alive():
+            return
+        app = current_app._get_current_object()
+        _BACKGROUND_STOP.clear()
+        _BACKGROUND_THREAD = Thread(
+            target=_background_worker_loop,
+            args=(app,),
+            name='camera-background-worker',
+            daemon=True,
+        )
+        _BACKGROUND_THREAD.start()
 
 
 def _apply_event_processing(frame, camera, fr_service, last_inactive_cleanup):
@@ -65,12 +313,14 @@ def _apply_event_processing(frame, camera, fr_service, last_inactive_cleanup):
 @camera_bp.route('/', methods=['GET'])
 @jwt_required()
 def get_cameras():
+    _ensure_background_worker()
     cams = Camera.query.all()
     return jsonify([c.to_dict() for c in cams])
 
 @camera_bp.route('/', methods=['POST'])
 @jwt_required()
 def create_camera():
+    _ensure_background_worker()
     data = request.get_json()
     cam = Camera(
         camera_id=data.get('camera_id'),
@@ -89,6 +339,7 @@ def create_camera():
 @camera_bp.route('/feed/<camera_id>', methods=['GET'])
 def stream_feed(camera_id):
     """Stream MJPEG video with face detection overlays"""
+    _ensure_background_worker()
     cam = Camera.query.filter_by(camera_id=camera_id).first()
     if not cam:
         return jsonify({'error': 'Camera not found'}), 404
@@ -96,6 +347,7 @@ def stream_feed(camera_id):
         return jsonify({'error': 'Browser camera stream must use /api/camera/process-client-frame'}), 400
 
     def gen(camera):
+        _bump_viewers(camera.camera_id, 1)
         fr_service = None
         last_inactive_cleanup = datetime.datetime.min
         try:
@@ -111,21 +363,51 @@ def stream_feed(camera_id):
         
         if not cap.isOpened():
             current_app.logger.error("Could not open camera stream: %s", source)
+            _set_runtime(
+                camera.camera_id,
+                source='live-stream',
+                processing_active=False,
+                camera_online=False,
+                last_error='Could not open camera stream',
+            )
+            _bump_viewers(camera.camera_id, -1)
             return
+        _set_runtime(
+            camera.camera_id,
+            source='live-stream',
+            processing_active=True,
+            camera_online=True,
+            last_error='',
+        )
 
         try:
             while True:
                 ret, frame = cap.read()
                 if not ret:
+                    _set_runtime(
+                        camera.camera_id,
+                        source='live-stream',
+                        processing_active=True,
+                        camera_online=False,
+                        last_error='Failed to read camera frame',
+                    )
                     break
                 
+                meta = None
                 if fr_service is not None:
-                    frame, last_inactive_cleanup, _ = _apply_event_processing(
+                    frame, last_inactive_cleanup, meta = _apply_event_processing(
                         frame,
                         cam,
                         fr_service,
                         last_inactive_cleanup,
                     )
+                _mark_camera_frame(
+                    camera.camera_id,
+                    source='live-stream',
+                    processing_active=bool((meta or {}).get('event_active', False)),
+                    camera_online=True,
+                    last_error='',
+                )
                 
                 ret, jpeg = cv2.imencode('.jpg', frame)
                 if not ret:
@@ -135,6 +417,7 @@ def stream_feed(camera_id):
                        b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n\r\n')
         finally:
             cap.release()
+            _bump_viewers(camera.camera_id, -1)
 
     return Response(
         stream_with_context(gen(cam)),
@@ -151,6 +434,7 @@ def stream_feed(camera_id):
 @jwt_required()
 def process_client_frame():
     """Accept a browser-captured frame and return processed JPEG with overlays."""
+    _ensure_background_worker()
     camera_id = (request.form.get('camera_id') or request.args.get('camera_id') or 'EVENT_DEFAULT').strip()
     cam = Camera.query.filter_by(camera_id=camera_id).first()
     if cam is None and camera_id == 'EVENT_DEFAULT':
@@ -189,6 +473,13 @@ def process_client_frame():
     frame, last_cleanup, meta = _apply_event_processing(frame, cam, fr_service, last_cleanup)
     with _CLIENT_CLEANUP_LOCK:
         _CLIENT_CLEANUP_TIMES[cam.camera_id] = last_cleanup
+    _mark_camera_frame(
+        cam.camera_id,
+        source='client-frame',
+        processing_active=bool(meta.get('event_active')),
+        camera_online=True,
+        last_error='',
+    )
 
     info_text = None
     info_color = (80, 220, 80)
@@ -237,3 +528,31 @@ def process_client_frame():
             'Expires': '0',
         },
     )
+
+
+@camera_bp.route('/runtime-status', methods=['GET'])
+@jwt_required()
+def runtime_status():
+    _ensure_background_worker()
+    camera_id = (request.args.get('camera_id') or '').strip()
+    if not camera_id:
+        return jsonify({'error': 'camera_id is required'}), 400
+
+    cam = Camera.query.filter_by(camera_id=camera_id).first()
+    if cam is None:
+        return jsonify({'error': 'Camera not found'}), 404
+
+    with _RUNTIME_LOCK:
+        runtime = dict(_RUNTIME_STATS.get(camera_id, _default_runtime(camera_id)))
+    runtime['viewers'] = _viewer_count(camera_id)
+    runtime['camera_type'] = cam.camera_type
+    runtime['camera_name'] = cam.name
+    runtime['camera_online'] = bool(runtime.get('camera_online')) if runtime.get('camera_online') is not None else bool(cam.is_online)
+
+    try:
+        from routes.events import is_event_active_for_camera
+        runtime['workflow_active'] = bool(is_event_active_for_camera(camera_id=camera_id))
+    except Exception:
+        runtime['workflow_active'] = False
+
+    return jsonify(runtime)

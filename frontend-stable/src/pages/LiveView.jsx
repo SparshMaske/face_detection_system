@@ -11,6 +11,16 @@ export default function LiveView() {
   const [streamNonce, setStreamNonce] = useState(Date.now());
   const [eventInfo, setEventInfo] = useState(null);
   const [liveFps, setLiveFps] = useState(0);
+  const [runtimeInfo, setRuntimeInfo] = useState(null);
+  const [liveFeedEnabled, setLiveFeedEnabled] = useState(() => {
+    try {
+      const raw = window.localStorage.getItem('live_feed_enabled');
+      if (raw === null) return true;
+      return raw !== '0';
+    } catch (_) {
+      return true;
+    }
+  });
   const [hasProcessedFrame, setHasProcessedFrame] = useState(false);
   const [deviceError, setDeviceError] = useState('');
   const [isFramePending, setIsFramePending] = useState(false);
@@ -35,6 +45,14 @@ export default function LiveView() {
     setLiveFps(0);
     setHasProcessedFrame(false);
   }, []);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem('live_feed_enabled', liveFeedEnabled ? '1' : '0');
+    } catch (_) {
+      // ignore storage errors
+    }
+  }, [liveFeedEnabled]);
 
   const stopLocalCamera = useCallback(
     (clearFrame = false) => {
@@ -117,6 +135,7 @@ export default function LiveView() {
     setSelectedCamera(camera);
     setStreamError('');
     setDeviceError('');
+    setRuntimeInfo(null);
     setStreamNonce(Date.now());
   };
 
@@ -139,6 +158,39 @@ export default function LiveView() {
   }, []);
 
   const isSelfieMode = cameraFacingMode === 'user';
+
+  useEffect(() => {
+    if (!selectedCamera?.camera_id) {
+      setRuntimeInfo(null);
+      return undefined;
+    }
+    let cancelled = false;
+    const fetchRuntimeStatus = async () => {
+      try {
+        const res = await api.get('/camera/runtime-status', {
+          params: { camera_id: selectedCamera.camera_id },
+        });
+        if (!cancelled) setRuntimeInfo(res?.data || null);
+      } catch (_) {
+        if (!cancelled) setRuntimeInfo(null);
+      }
+    };
+    fetchRuntimeStatus();
+    const id = window.setInterval(fetchRuntimeStatus, 2000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, [selectedCamera?.camera_id]);
+
+  useEffect(() => {
+    if (!liveFeedEnabled) {
+      clearProcessedFrame();
+      setStreamError('');
+      return;
+    }
+    setStreamNonce(Date.now());
+  }, [clearProcessedFrame, liveFeedEnabled]);
 
   useEffect(() => {
     if (!isClientDeviceMode) {
@@ -338,7 +390,12 @@ export default function LiveView() {
             Math.max(minGap, Math.round(avgRttMsRef.current * 0.12)),
           );
 
-          await drawProcessedBlob(response.data);
+          if (liveFeedEnabled) {
+            await drawProcessedBlob(response.data);
+            setHasProcessedFrame(true);
+          } else {
+            setHasProcessedFrame(false);
+          }
           const nowMs = Date.now();
           const fpsWindow = fpsWindowRef.current;
           if (!fpsWindow.startMs) {
@@ -359,7 +416,6 @@ export default function LiveView() {
           }
           setStreamError('');
           hasRenderedFrame = true;
-          setHasProcessedFrame(true);
           setIsFramePending(false);
           setBackendUnavailable(false);
           retryDelayMs = isPhoneClient ? 900 : 550;
@@ -447,14 +503,16 @@ export default function LiveView() {
       if (timerId) window.clearTimeout(timerId);
       stopLocalCamera(false);
     };
-  }, [cameraFacingMode, clearProcessedFrame, isClientDeviceMode, isPhoneClient, selectedCamera?.camera_id, stopLocalCamera]);
+  }, [cameraFacingMode, clearProcessedFrame, isClientDeviceMode, isPhoneClient, liveFeedEnabled, selectedCamera?.camera_id, stopLocalCamera]);
 
   useEffect(() => () => stopLocalCamera(true), [stopLocalCamera]);
 
   const streamSrc = selectedCamera
     ? `${String(api.defaults.baseURL).replace(/\/$/, '')}/camera/feed/${selectedCamera.camera_id}?t=${streamNonce}`
     : '';
-  const fpsLabel = isClientDeviceMode ? `${Math.max(0, liveFps).toFixed(1)} FPS` : 'FPS: N/A';
+  const backendFps = Number(runtimeInfo?.fps || 0);
+  const effectiveFps = isClientDeviceMode ? liveFps : backendFps;
+  const fpsLabel = `${Math.max(0, effectiveFps).toFixed(1)} FPS`;
 
   if (loading) return <div className="p-6">Loading cameras...</div>;
   if (error) return <div className="p-6 text-red-600">{error}</div>;
@@ -464,6 +522,17 @@ export default function LiveView() {
       <div className="flex justify-between items-center">
         <h1 className="text-2xl font-bold">Live Camera Feed</h1>
         <div className="flex items-center gap-2 flex-wrap justify-end">
+          <button
+            type="button"
+            className={liveFeedEnabled ? 'btn btn-danger' : 'btn btn-primary'}
+            onClick={() => {
+              setStreamError('');
+              setDeviceError('');
+              setLiveFeedEnabled((prev) => !prev);
+            }}
+          >
+            {liveFeedEnabled ? 'Turn Feed Off' : 'Turn Feed On'}
+          </button>
           {isClientDeviceMode && isPhoneClient && (
             <button
               type="button"
@@ -491,7 +560,12 @@ export default function LiveView() {
       </div>
       {eventInfo?.event_name && (
         <div className="text-sm text-gray-600">
-          Event: <strong>{eventInfo.event_name}</strong> | Status: <strong>{eventInfo.status}</strong> | <strong>{fpsLabel}</strong>
+          Event: <strong>{eventInfo.event_name}</strong> | Status: <strong>{eventInfo.status}</strong> | Feed: <strong>{liveFeedEnabled ? 'On' : 'Off'}</strong> | FPS: <strong>{fpsLabel}</strong>
+        </div>
+      )}
+      {runtimeInfo?.last_error && !isClientDeviceMode && (
+        <div className="text-sm text-amber-500">
+          Camera runtime: {runtimeInfo.last_error}
         </div>
       )}
       {backendUnavailable && (
@@ -504,6 +578,26 @@ export default function LiveView() {
         <div className="bg-black rounded-lg overflow-hidden h-[600px] flex items-center justify-center relative">
           {deviceError ? (
             <div className="text-center text-white p-6">{deviceError}</div>
+          ) : !liveFeedEnabled ? (
+            <>
+              {isClientDeviceMode && (
+                <>
+                  <video
+                    ref={videoRef}
+                    autoPlay
+                    muted
+                    playsInline
+                    style={isSelfieMode ? { transform: 'scaleX(-1)' } : undefined}
+                    className="absolute -left-[10000px] top-0 h-[1px] w-[1px] opacity-0 pointer-events-none"
+                  />
+                  <canvas ref={processedCanvasRef} className="hidden" aria-label="Processed Device Feed" />
+                  <canvas ref={canvasRef} className="hidden" />
+                </>
+              )}
+              <div className="text-center text-white p-6 max-w-2xl">
+                Live feed is turned off. Backend processing remains active for scheduled event cameras.
+              </div>
+            </>
           ) : streamError ? (
             <div className="text-center text-white p-6">
               <p className="mb-3">{streamError}</p>
