@@ -350,6 +350,7 @@ def stream_feed(camera_id):
         _bump_viewers(camera.camera_id, 1)
         fr_service = None
         last_inactive_cleanup = datetime.datetime.min
+        cap = None
         try:
             # Import lazily to avoid hard-failing stream on model import issues.
             from services.face_recognition import FaceRecognitionService
@@ -359,31 +360,34 @@ def stream_feed(camera_id):
 
         stream_url = (camera.stream_url or '0').strip()
         source = 0 if stream_url in ('', '0') else stream_url
-        cap = cv2.VideoCapture(source)
-        
-        if not cap.isOpened():
-            current_app.logger.error("Could not open camera stream: %s", source)
-            _set_runtime(
-                camera.camera_id,
-                source='live-stream',
-                processing_active=False,
-                camera_online=False,
-                last_error='Could not open camera stream',
-            )
-            _bump_viewers(camera.camera_id, -1)
-            return
-        _set_runtime(
-            camera.camera_id,
-            source='live-stream',
-            processing_active=True,
-            camera_online=True,
-            last_error='',
-        )
-
         try:
             while True:
+                if cap is None:
+                    cap = cv2.VideoCapture(source)
+                    if not cap.isOpened():
+                        current_app.logger.warning("Could not open camera stream: %s", source)
+                        _set_runtime(
+                            camera.camera_id,
+                            source='live-stream',
+                            processing_active=True,
+                            camera_online=False,
+                            last_error='Could not open camera stream',
+                        )
+                        cap.release()
+                        cap = None
+                        # Give the background worker time to release/reopen if needed.
+                        time.sleep(0.45)
+                        continue
+                    _set_runtime(
+                        camera.camera_id,
+                        source='live-stream',
+                        processing_active=True,
+                        camera_online=True,
+                        last_error='',
+                    )
+
                 ret, frame = cap.read()
-                if not ret:
+                if not ret or frame is None:
                     _set_runtime(
                         camera.camera_id,
                         source='live-stream',
@@ -391,7 +395,10 @@ def stream_feed(camera_id):
                         camera_online=False,
                         last_error='Failed to read camera frame',
                     )
-                    break
+                    cap.release()
+                    cap = None
+                    time.sleep(0.1)
+                    continue
                 
                 meta = None
                 if fr_service is not None:
@@ -415,8 +422,12 @@ def stream_feed(camera_id):
                 frame_bytes = jpeg.tobytes()
                 yield (b'--frame\r\n'
                        b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n\r\n')
+        except GeneratorExit:
+            # Client disconnected.
+            pass
         finally:
-            cap.release()
+            if cap is not None:
+                cap.release()
             _bump_viewers(camera.camera_id, -1)
 
     return Response(

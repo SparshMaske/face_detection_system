@@ -528,7 +528,13 @@ export default function LiveView() {
             onClick={() => {
               setStreamError('');
               setDeviceError('');
-              setLiveFeedEnabled((prev) => !prev);
+              setLiveFeedEnabled((prev) => {
+                const next = !prev;
+                if (next) {
+                  setStreamNonce(Date.now());
+                }
+                return next;
+              });
             }}
           >
             {liveFeedEnabled ? 'Turn Feed Off' : 'Turn Feed On'}
@@ -634,6 +640,7 @@ export default function LiveView() {
             </>
           ) : (
             <img 
+              key={`${selectedCamera?.camera_id || 'camera'}-${streamNonce}`}
               src={streamSrc}
               alt="Live Feed" 
               className="w-full h-full object-contain"
