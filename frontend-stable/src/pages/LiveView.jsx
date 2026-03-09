@@ -10,6 +10,7 @@ export default function LiveView() {
   const [streamError, setStreamError] = useState('');
   const [streamNonce, setStreamNonce] = useState(Date.now());
   const [eventInfo, setEventInfo] = useState(null);
+  const [liveFps, setLiveFps] = useState(0);
   const [hasProcessedFrame, setHasProcessedFrame] = useState(false);
   const [deviceError, setDeviceError] = useState('');
   const [isFramePending, setIsFramePending] = useState(false);
@@ -20,6 +21,7 @@ export default function LiveView() {
   const processedCanvasRef = useRef(null);
   const localStreamRef = useRef(null);
   const avgRttMsRef = useRef(650);
+  const fpsWindowRef = useRef({ startMs: 0, frames: 0 });
 
   const clearProcessedFrame = useCallback(() => {
     const outputCanvas = processedCanvasRef.current;
@@ -29,6 +31,8 @@ export default function LiveView() {
         outputCtx.clearRect(0, 0, outputCanvas.width, outputCanvas.height);
       }
     }
+    fpsWindowRef.current = { startMs: 0, frames: 0 };
+    setLiveFps(0);
     setHasProcessedFrame(false);
   }, []);
 
@@ -335,6 +339,24 @@ export default function LiveView() {
           );
 
           await drawProcessedBlob(response.data);
+          const nowMs = Date.now();
+          const fpsWindow = fpsWindowRef.current;
+          if (!fpsWindow.startMs) {
+            fpsWindow.startMs = nowMs;
+            fpsWindow.frames = 1;
+          } else {
+            fpsWindow.frames += 1;
+            const elapsedMs = nowMs - fpsWindow.startMs;
+            if (elapsedMs >= 1000) {
+              const fpsValue = (fpsWindow.frames * 1000) / Math.max(1, elapsedMs);
+              setLiveFps((prev) => {
+                if (!Number.isFinite(prev) || prev <= 0) return fpsValue;
+                return (prev * 0.6) + (fpsValue * 0.4);
+              });
+              fpsWindow.startMs = nowMs;
+              fpsWindow.frames = 0;
+            }
+          }
           setStreamError('');
           hasRenderedFrame = true;
           setHasProcessedFrame(true);
@@ -432,6 +454,7 @@ export default function LiveView() {
   const streamSrc = selectedCamera
     ? `${String(api.defaults.baseURL).replace(/\/$/, '')}/camera/feed/${selectedCamera.camera_id}?t=${streamNonce}`
     : '';
+  const fpsLabel = isClientDeviceMode ? `${Math.max(0, liveFps).toFixed(1)} FPS` : 'FPS: N/A';
 
   if (loading) return <div className="p-6">Loading cameras...</div>;
   if (error) return <div className="p-6 text-red-600">{error}</div>;
@@ -468,7 +491,7 @@ export default function LiveView() {
       </div>
       {eventInfo?.event_name && (
         <div className="text-sm text-gray-600">
-          Event: <strong>{eventInfo.event_name}</strong> | Status: <strong>{eventInfo.status}</strong>
+          Event: <strong>{eventInfo.event_name}</strong> | Status: <strong>{eventInfo.status}</strong> | <strong>{fpsLabel}</strong>
         </div>
       )}
       {backendUnavailable && (
