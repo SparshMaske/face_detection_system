@@ -16,6 +16,8 @@ _VIEWER_COUNTS = {}
 _VIEWER_LOCK = Lock()
 _RUNTIME_STATS = {}
 _RUNTIME_LOCK = Lock()
+_LATEST_FRAMES = {}
+_LATEST_FRAMES_LOCK = Lock()
 _BACKGROUND_LOCK = Lock()
 _BACKGROUND_THREAD = None
 _BACKGROUND_STOP = Event()
@@ -84,6 +86,29 @@ def _bump_viewers(camera_id, delta):
     return next_count
 
 
+def _store_latest_frame(camera_id, frame):
+    if frame is None:
+        return
+    ok, jpeg = cv2.imencode('.jpg', frame, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
+    if not ok:
+        return
+    with _LATEST_FRAMES_LOCK:
+        _LATEST_FRAMES[camera_id] = {
+            'bytes': jpeg.tobytes(),
+            'ts': time.monotonic(),
+        }
+
+
+def _get_latest_frame(camera_id, max_age_sec=2.0):
+    with _LATEST_FRAMES_LOCK:
+        item = _LATEST_FRAMES.get(camera_id)
+    if not item:
+        return None
+    if (time.monotonic() - float(item.get('ts', 0.0))) > float(max_age_sec):
+        return None
+    return item.get('bytes')
+
+
 def _background_worker_loop(app):
     fr_service = None
     active_camera_id = None
@@ -112,17 +137,6 @@ def _background_worker_loop(app):
             active_camera_id = None
             active_source = None
             time.sleep(0.25)
-            continue
-
-        # Avoid opening the same camera twice; live stream endpoint already processes frames.
-        if _viewer_count(selected_camera_id) > 0:
-            _set_runtime(selected_camera_id, processing_active=True, source='live-view')
-            if cap is not None:
-                cap.release()
-                cap = None
-            active_camera_id = None
-            active_source = None
-            time.sleep(0.2)
             continue
 
         with app.app_context():
@@ -228,6 +242,7 @@ def _background_worker_loop(app):
                 camera_online=True,
                 last_error='',
             )
+            _store_latest_frame(selected_camera_id, frame)
         except Exception as exc:
             _set_runtime(
                 selected_camera_id,
@@ -362,6 +377,21 @@ def stream_feed(camera_id):
         source = 0 if stream_url in ('', '0') else stream_url
         try:
             while True:
+                # Prefer already-processed background frame to avoid camera handle contention.
+                cached_frame = _get_latest_frame(camera.camera_id, max_age_sec=2.0)
+                if cached_frame is not None:
+                    _set_runtime(
+                        camera.camera_id,
+                        source='live-stream-cache',
+                        processing_active=True,
+                        camera_online=True,
+                        last_error='',
+                    )
+                    yield (b'--frame\r\n'
+                           b'Content-Type: image/jpeg\r\n\r\n' + cached_frame + b'\r\n\r\n')
+                    time.sleep(0.06)
+                    continue
+
                 if cap is None:
                     cap = cv2.VideoCapture(source)
                     if not cap.isOpened():
