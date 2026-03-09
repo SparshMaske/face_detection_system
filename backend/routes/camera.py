@@ -89,7 +89,7 @@ def _bump_viewers(camera_id, delta):
 def _store_latest_frame(camera_id, frame):
     if frame is None:
         return
-    ok, jpeg = cv2.imencode('.jpg', frame, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
+    ok, jpeg = cv2.imencode('.jpg', frame, [int(cv2.IMWRITE_JPEG_QUALITY), 72])
     if not ok:
         return
     with _LATEST_FRAMES_LOCK:
@@ -107,6 +107,35 @@ def _get_latest_frame(camera_id, max_age_sec=2.0):
     if (time.monotonic() - float(item.get('ts', 0.0))) > float(max_age_sec):
         return None
     return item.get('bytes')
+
+
+def _apply_capture_settings(cap, camera):
+    """
+    Apply best-effort capture tuning for USB/webcam sources.
+    Unsupported properties are ignored by OpenCV backends.
+    """
+    if cap is None or camera is None:
+        return
+    try:
+        width = int(getattr(camera, 'resolution_width', 0) or 0)
+        height = int(getattr(camera, 'resolution_height', 0) or 0)
+        fps_limit = int(getattr(camera, 'fps_limit', 0) or 0)
+        stream_url = str(getattr(camera, 'stream_url', '') or '').strip()
+        camera_type = str(getattr(camera, 'camera_type', '') or '').lower()
+        is_local_webcam = stream_url in ('', '0') or camera_type in ('webcam', 'usb', 'default')
+        if width > 0:
+            cap.set(cv2.CAP_PROP_FRAME_WIDTH, float(width))
+        if height > 0:
+            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, float(height))
+        desired_fps = fps_limit
+        if is_local_webcam:
+            desired_fps = max(desired_fps, 24)
+        if desired_fps > 0:
+            cap.set(cv2.CAP_PROP_FPS, float(max(1, min(60, desired_fps))))
+        # Keep internal queue short to reduce latency/lag.
+        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+    except Exception:
+        pass
 
 
 def _background_worker_loop(app):
@@ -191,6 +220,7 @@ def _background_worker_loop(app):
             if cap is not None:
                 cap.release()
             cap = cv2.VideoCapture(source)
+            _apply_capture_settings(cap, cam)
             active_camera_id = selected_camera_id
             active_source = source_token
             if not cap.isOpened():
@@ -252,8 +282,12 @@ def _background_worker_loop(app):
                 last_error=f'Processing error: {exc}',
             )
 
-        fps_limit = int(getattr(cam, 'fps_limit', 10) or 10)
-        target_fps = max(4, min(15, fps_limit))
+        fps_limit = int(getattr(cam, 'fps_limit', 24) or 24)
+        is_local_webcam = source == 0 or str(getattr(cam, 'camera_type', '') or '').lower() in ('webcam', 'usb', 'default')
+        if is_local_webcam:
+            target_fps = max(15, min(30, fps_limit))
+        else:
+            target_fps = max(6, min(25, fps_limit))
         time.sleep(max(0.02, 1.0 / float(target_fps)))
 
     if cap is not None:
@@ -375,6 +409,9 @@ def stream_feed(camera_id):
 
         stream_url = (camera.stream_url or '0').strip()
         source = 0 if stream_url in ('', '0') else stream_url
+        camera_fps_limit = int(getattr(camera, 'fps_limit', 24) or 24)
+        is_local_webcam = source == 0 or str(getattr(camera, 'camera_type', '') or '').lower() in ('webcam', 'usb', 'default')
+        preview_fps = max(15, min(30, camera_fps_limit)) if is_local_webcam else max(8, min(25, camera_fps_limit))
         try:
             while True:
                 # Prefer already-processed background frame to avoid camera handle contention.
@@ -389,11 +426,12 @@ def stream_feed(camera_id):
                     )
                     yield (b'--frame\r\n'
                            b'Content-Type: image/jpeg\r\n\r\n' + cached_frame + b'\r\n\r\n')
-                    time.sleep(0.06)
+                    time.sleep(max(0.01, 1.0 / float(preview_fps)))
                     continue
 
                 if cap is None:
                     cap = cv2.VideoCapture(source)
+                    _apply_capture_settings(cap, camera)
                     if not cap.isOpened():
                         current_app.logger.warning("Could not open camera stream: %s", source)
                         _set_runtime(
@@ -446,7 +484,7 @@ def stream_feed(camera_id):
                     last_error='',
                 )
                 
-                ret, jpeg = cv2.imencode('.jpg', frame)
+                ret, jpeg = cv2.imencode('.jpg', frame, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
                 if not ret:
                     continue
                 frame_bytes = jpeg.tobytes()
