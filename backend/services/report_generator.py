@@ -2,7 +2,7 @@ import os
 import csv
 from datetime import datetime
 from glob import glob
-from typing import List
+from typing import List, Optional, Tuple
 
 from flask import current_app
 from models.visitor import Visitor, VisitorSession
@@ -31,6 +31,16 @@ class ReportGenerator:
         os.makedirs(self.reports_dir, exist_ok=True)
         self.visitor_reports_dir = os.path.join(self.reports_dir, 'visitors')
         os.makedirs(self.visitor_reports_dir, exist_ok=True)
+        # Keep multiple cascades for better fallback detection coverage.
+        self._face_cascades = []
+        for cascade_name in ('haarcascade_frontalface_default.xml', 'haarcascade_frontalface_alt2.xml'):
+            try:
+                cascade_path = os.path.join(cv2.data.haarcascades, cascade_name)
+                cascade = cv2.CascadeClassifier(cascade_path)
+                if not cascade.empty():
+                    self._face_cascades.append(cascade)
+            except Exception:
+                continue
 
     @staticmethod
     def _safe_text(value):
@@ -175,7 +185,7 @@ class ReportGenerator:
 
         return csv_path
 
-    def _resolve_visitor_image_path(self, visitor, prefer_first=False, reference_time=None):
+    def _resolve_visitor_image_candidates(self, visitor, prefer_first=False, reference_time=None):
         upload_root = current_app.config.get('UPLOAD_FOLDER')
         visitor_root = current_app.config.get('VISITOR_UPLOAD_FOLDER')
 
@@ -203,13 +213,19 @@ class ReportGenerator:
         if visitor.primary_image_path:
             candidates.append(visitor.primary_image_path)
 
+        resolved = []
+        seen = set()
         for raw_path in candidates:
             if not raw_path:
                 continue
 
             # Support absolute file path records directly.
             if os.path.isabs(raw_path) and os.path.exists(raw_path):
-                return raw_path
+                normalized_abs = os.path.abspath(raw_path)
+                if normalized_abs not in seen:
+                    seen.add(normalized_abs)
+                    resolved.append(normalized_abs)
+                continue
 
             normalized = raw_path.replace('\\', '/')
             if normalized.startswith('/'):
@@ -228,29 +244,62 @@ class ReportGenerator:
 
             for abs_path in possible_paths:
                 if abs_path and os.path.exists(abs_path):
-                    return abs_path
-        return None
+                    normalized_abs = os.path.abspath(abs_path)
+                    if normalized_abs not in seen:
+                        seen.add(normalized_abs)
+                        resolved.append(normalized_abs)
+                    break
+        return resolved
 
-    def _prepare_face_to_shoulder_snapshot(self, image_path, visitor_code):
+    def _resolve_visitor_image_path(self, visitor, prefer_first=False, reference_time=None):
+        candidates = self._resolve_visitor_image_candidates(
+            visitor,
+            prefer_first=prefer_first,
+            reference_time=reference_time,
+        )
+        return candidates[0] if candidates else None
+
+    def _detect_primary_face_bbox(self, image) -> Optional[Tuple[int, int, int, int]]:
+        if image is None:
+            return None
+        try:
+            gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        except Exception:
+            return None
+
+        # Try stronger and then more permissive detector settings.
+        params = [
+            {'scaleFactor': 1.10, 'minNeighbors': 5, 'minSize': (40, 40)},
+            {'scaleFactor': 1.06, 'minNeighbors': 4, 'minSize': (32, 32)},
+        ]
+        best = None
+        best_area = 0
+        for cascade in self._face_cascades:
+            for cfg in params:
+                try:
+                    faces = cascade.detectMultiScale(gray, **cfg)
+                except Exception:
+                    faces = []
+                for (x, y, w, h) in faces:
+                    area = int(w) * int(h)
+                    if area > best_area:
+                        best_area = area
+                        best = (int(x), int(y), int(w), int(h))
+                if best is not None:
+                    return best
+        return best
+
+    def _prepare_face_to_shoulder_snapshot(self, image_path, visitor_code, allow_center_fallback=False):
         if not image_path or not os.path.exists(image_path):
-            return image_path
+            return None
         try:
             img = cv2.imread(image_path)
             if img is None:
-                return image_path
-            gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-            cascade_path = os.path.join(cv2.data.haarcascades, 'haarcascade_frontalface_default.xml')
-            face_cascade = cv2.CascadeClassifier(cascade_path)
-            if face_cascade.empty():
-                return image_path
-
-            faces = face_cascade.detectMultiScale(
-                gray,
-                scaleFactor=1.1,
-                minNeighbors=5,
-                minSize=(48, 48),
-            )
-            if len(faces) == 0:
+                return None
+            face_bbox = self._detect_primary_face_bbox(img)
+            if face_bbox is None:
+                if not allow_center_fallback:
+                    return None
                 # Fallback crop when detector misses: centered portrait crop.
                 img_h, img_w = img.shape[:2]
                 crop_w = int(img_w * 0.64)
@@ -261,7 +310,7 @@ class ReportGenerator:
                 ny2 = min(img_h, ny1 + crop_h)
                 crop = img[ny1:ny2, nx1:nx2]
                 if crop.size == 0:
-                    return image_path
+                    return None
 
                 snapshots_dir = os.path.join(self.visitor_reports_dir, 'snapshots')
                 os.makedirs(snapshots_dir, exist_ok=True)
@@ -270,13 +319,16 @@ class ReportGenerator:
                     f"{visitor_code}_face_shoulder_{datetime.now().strftime('%Y%m%d%H%M%S')}.jpg",
                 )
                 cv2.imwrite(snapshot_path, crop)
-                return snapshot_path
+                if self._image_has_face(snapshot_path):
+                    return snapshot_path
+                return None
 
-            x, y, w, h = max(faces, key=lambda face: face[2] * face[3])
+            x, y, w, h = face_bbox
             img_h, img_w = img.shape[:2]
-            expand_x = int(w * 0.35)
+            # Keep crop focused on person portrait (face to shoulder), avoid over-expanding to torso.
+            expand_x = int(w * 0.30)
             expand_y_top = int(h * 0.35)
-            expand_y_bottom = int(h * 1.55)
+            expand_y_bottom = int(h * 1.15)
 
             nx1 = max(0, x - expand_x)
             ny1 = max(0, y - expand_y_top)
@@ -284,7 +336,7 @@ class ReportGenerator:
             ny2 = min(img_h, y + h + expand_y_bottom)
             crop = img[ny1:ny2, nx1:nx2]
             if crop.size == 0:
-                return image_path
+                return None
 
             snapshots_dir = os.path.join(self.visitor_reports_dir, 'snapshots')
             os.makedirs(snapshots_dir, exist_ok=True)
@@ -293,11 +345,21 @@ class ReportGenerator:
                 f"{visitor_code}_face_shoulder_{datetime.now().strftime('%Y%m%d%H%M%S')}.jpg",
             )
             cv2.imwrite(snapshot_path, crop)
-            return snapshot_path
+            if self._image_has_face(snapshot_path):
+                return snapshot_path
+            return None
         except Exception:
-            return image_path
+            return None
 
-    def _latest_existing_snapshot(self, visitor_code):
+    def _image_has_face(self, image_path):
+        if not image_path or not os.path.exists(image_path):
+            return False
+        img = cv2.imread(image_path)
+        if img is None:
+            return False
+        return self._detect_primary_face_bbox(img) is not None
+
+    def _latest_existing_snapshot(self, visitor_code, require_face=False):
         snapshots_dir = os.path.join(self.visitor_reports_dir, 'snapshots')
         if not os.path.isdir(snapshots_dir):
             return None
@@ -312,7 +374,45 @@ class ReportGenerator:
         if not candidates:
             return None
         candidates.sort(key=lambda path: os.path.getmtime(path), reverse=True)
-        return candidates[0]
+        if not require_face:
+            return candidates[0]
+        for path in candidates:
+            if self._image_has_face(path):
+                return path
+        return None
+
+    def _select_best_snapshot(self, visitor, visitor_code, prefer_first=False, reference_time=None):
+        candidates = self._resolve_visitor_image_candidates(
+            visitor,
+            prefer_first=prefer_first,
+            reference_time=reference_time,
+        )
+
+        # Strict pass: only accept face-detected portrait crop.
+        for image_path in candidates:
+            snapshot_path = self._prepare_face_to_shoulder_snapshot(
+                image_path,
+                visitor_code,
+                allow_center_fallback=False,
+            )
+            if snapshot_path and os.path.exists(snapshot_path):
+                return snapshot_path
+
+        # Reuse previously generated valid face snapshots.
+        existing = self._latest_existing_snapshot(visitor_code, require_face=True)
+        if existing and os.path.exists(existing):
+            return existing
+
+        # Last resort (still produce an image if nothing else is available).
+        if candidates:
+            fallback = self._prepare_face_to_shoulder_snapshot(
+                candidates[0],
+                visitor_code,
+                allow_center_fallback=True,
+            )
+            if fallback and os.path.exists(fallback):
+                return fallback
+        return None
 
     def _build_summary_with_reportlab(self, filepath, title_text, subtitle_text, rows):
         doc = SimpleDocTemplate(filepath, pagesize=A4)
@@ -727,14 +827,12 @@ class ReportGenerator:
                 last_out = summary['last_out']
                 snapshot_path = None
                 if visitor is not None:
-                    raw_path = self._resolve_visitor_image_path(
+                    snapshot_path = self._select_best_snapshot(
                         visitor,
+                        canonical_code,
                         prefer_first=True,
                         reference_time=first_in,
                     )
-                    snapshot_path = self._prepare_face_to_shoulder_snapshot(raw_path, canonical_code)
-                    if not snapshot_path or not os.path.exists(snapshot_path):
-                        snapshot_path = self._latest_existing_snapshot(canonical_code)
                 duration_seconds = 0
                 if first_in and last_out:
                     duration_seconds = max(0, int((last_out - first_in).total_seconds()))
@@ -830,10 +928,12 @@ class ReportGenerator:
         duration_seconds = max(0, int((last_out - first_in).total_seconds()))
         duration_text = self._format_duration(duration_seconds)
         capture_date_text = first_in.strftime('%Y-%m-%d')
-        visitor_image_path = self._resolve_visitor_image_path(visitor)
-        visitor_image_path = self._prepare_face_to_shoulder_snapshot(visitor_image_path, visitor.visitor_id)
-        if not visitor_image_path or not os.path.exists(visitor_image_path):
-            visitor_image_path = self._latest_existing_snapshot(visitor.visitor_id)
+        visitor_image_path = self._select_best_snapshot(
+            visitor,
+            visitor.visitor_id,
+            prefer_first=True,
+            reference_time=first_in,
+        )
 
         filename = f"{visitor.visitor_id}_report.pdf"
         filepath = os.path.join(self.visitor_reports_dir, filename)

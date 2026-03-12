@@ -282,6 +282,23 @@ class FaceRecognitionService:
         if crop.size == 0:
             return None
 
+        # Guard against occasional bad bbox offsets: ensure stored image still contains a face.
+        try:
+            has_face = len(self._detect_faces(crop)) > 0
+        except Exception:
+            has_face = True
+        if not has_face:
+            tight_pad_x = int(face_w * 0.12)
+            tight_pad_top = int(face_h * 0.18)
+            tight_pad_bottom = int(face_h * 0.42)
+            tx1 = max(0, x1 - tight_pad_x)
+            ty1 = max(0, y1 - tight_pad_top)
+            tx2 = min(w, x2 + tight_pad_x)
+            ty2 = min(h, y2 + tight_pad_bottom)
+            tight_crop = frame[ty1:ty2, tx1:tx2]
+            if tight_crop.size != 0:
+                crop = tight_crop
+
         filename = f"{visitor_code}_{datetime.datetime.now().strftime('%Y%m%d%H%M%S%f')}.jpg"
         rel_path = os.path.join('visitors', filename)
         abs_path = os.path.join(current_app.config['UPLOAD_FOLDER'], rel_path)
