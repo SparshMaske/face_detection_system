@@ -647,14 +647,6 @@ export default function LiveView() {
               onError={() => setStreamError('Failed to load camera stream. Verify camera source and backend OpenCV access.')}
             />
           )}
-          <div className="absolute top-4 left-4 bg-black/50 text-white px-2 py-1 rounded text-sm">
-            {isClientDeviceMode
-              ? `${selectedCamera.name} (This Device${isPhoneClient ? ` • ${isSelfieMode ? 'Selfie' : 'Rear'}` : ''})`
-              : selectedCamera.name}
-          </div>
-          <div className="absolute top-4 right-4 bg-emerald-700/70 text-white px-2 py-1 rounded text-xs">
-            AI Bounding Box: On
-          </div>
           {isClientDeviceMode && isFramePending && !hasProcessedFrame && !streamError && !deviceError && (
             <div className="absolute bottom-4 left-1/2 -translate-x-1/2 bg-black/60 text-white text-sm px-3 py-1 rounded">
               Initializing camera stream...

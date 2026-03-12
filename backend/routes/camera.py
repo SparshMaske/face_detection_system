@@ -632,40 +632,6 @@ def process_client_frame():
         last_error='',
     )
 
-    info_text = None
-    info_color = (80, 220, 80)
-    if meta.get('reason') == 'processed':
-        stats = meta.get('stats') or {}
-        faces = int(stats.get('faces_detected') or 0)
-        staff_hits = int(stats.get('staff_matches') or 0)
-        visitor_hits = int(stats.get('known_visitors') or 0) + int(stats.get('new_visitors') or 0)
-        if faces <= 0:
-            info_text = "AI active: no face detected"
-            info_color = (0, 215, 255)
-        else:
-            info_text = f"AI active: faces={faces} staff={staff_hits} visitors={visitor_hits}"
-            info_color = (80, 220, 80)
-    elif meta.get('reason') == 'event_inactive':
-        info_text = "AI idle: event is not active for this camera"
-        info_color = (0, 200, 255)
-    elif meta.get('reason') == 'model_unavailable':
-        info_text = "AI error: face model unavailable on backend"
-        info_color = (0, 0, 255)
-    elif meta.get('reason') == 'processing_error':
-        info_text = "AI error: processing failed (check backend logs)"
-        info_color = (0, 0, 255)
-
-    if info_text:
-        cv2.putText(
-            frame,
-            info_text,
-            (16, 28),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.65,
-            info_color,
-            2,
-        )
-
     ok, jpeg = cv2.imencode('.jpg', frame, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
     if not ok:
         return jsonify({'error': 'Failed to encode processed frame'}), 500
