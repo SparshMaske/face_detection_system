@@ -201,7 +201,7 @@ export default function LiveView() {
     let cancelled = false;
     let timerId = null;
     let hasRenderedFrame = false;
-    let retryDelayMs = isPhoneClient ? 90 : 70;
+    let retryDelayMs = isPhoneClient ? 28 : 14;
 
     const scheduleNext = (delayMs = retryDelayMs) => {
       if (cancelled) return;
@@ -309,19 +309,19 @@ export default function LiveView() {
       const videoEl = videoRef.current;
       const canvasEl = canvasRef.current;
       if (!videoEl || !canvasEl || videoEl.readyState < 2) {
-        scheduleNext(300);
+        scheduleNext(120);
         return;
       }
 
       const sourceWidth = videoEl.videoWidth || 0;
       const sourceHeight = videoEl.videoHeight || 0;
       if (sourceWidth < 2 || sourceHeight < 2) {
-        scheduleNext(300);
+        scheduleNext(120);
         return;
       }
 
       // Keep frame payload lighter to reduce UI lag and network churn.
-      const maxWidth = isPhoneClient ? 384 : 560;
+      const maxWidth = isPhoneClient ? 320 : 416;
       const scale = Math.min(1, maxWidth / sourceWidth);
       const nextCanvasWidth = Math.max(2, Math.floor(sourceWidth * scale));
       const nextCanvasHeight = Math.max(2, Math.floor(sourceHeight * scale));
@@ -329,13 +329,13 @@ export default function LiveView() {
       if (canvasEl.height !== nextCanvasHeight) canvasEl.height = nextCanvasHeight;
       const ctx = canvasEl.getContext('2d', { alpha: false });
       if (!ctx) {
-        scheduleNext(350);
+        scheduleNext(140);
         return;
       }
       ctx.drawImage(videoEl, 0, 0, canvasEl.width, canvasEl.height);
 
       const blob = await new Promise((resolve) => {
-        const jpegQuality = isPhoneClient ? 0.56 : 0.66;
+        const jpegQuality = isPhoneClient ? 0.50 : 0.58;
         if (typeof canvasEl.toBlob === 'function') {
           canvasEl.toBlob(resolve, 'image/jpeg', jpegQuality);
           return;
@@ -351,7 +351,7 @@ export default function LiveView() {
         }
       });
       if (!blob) {
-        scheduleNext(300);
+        scheduleNext(120);
         return;
       }
 
@@ -383,11 +383,11 @@ export default function LiveView() {
         if (!cancelled) {
           const elapsedMs = Math.max(1, performance.now() - requestStartedAt);
           avgRttMsRef.current = (avgRttMsRef.current * 0.7) + (elapsedMs * 0.3);
-          const minGap = isPhoneClient ? 40 : 25;
-          const maxGap = isPhoneClient ? 110 : 95;
+          const minGap = isPhoneClient ? 12 : 6;
+          const maxGap = isPhoneClient ? 45 : 28;
           retryDelayMs = Math.min(
             maxGap,
-            Math.max(minGap, Math.round(avgRttMsRef.current * 0.12)),
+            Math.max(minGap, Math.round(avgRttMsRef.current * 0.03)),
           );
 
           if (liveFeedEnabled) {
@@ -418,7 +418,6 @@ export default function LiveView() {
           hasRenderedFrame = true;
           setIsFramePending(false);
           setBackendUnavailable(false);
-          retryDelayMs = isPhoneClient ? 900 : 550;
         }
       } catch (err) {
         if (!cancelled) {
@@ -431,7 +430,7 @@ export default function LiveView() {
             setBackendUnavailable(true);
           }
           setIsFramePending(false);
-          retryDelayMs = Math.min(Math.max(retryDelayMs * 1.3, 220), 2800);
+          retryDelayMs = Math.min(Math.max(retryDelayMs * 1.4, 60), 1200);
         }
       }
       scheduleNext();
