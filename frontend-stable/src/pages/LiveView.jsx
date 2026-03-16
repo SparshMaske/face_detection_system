@@ -32,6 +32,7 @@ export default function LiveView() {
   const localStreamRef = useRef(null);
   const avgRttMsRef = useRef(650);
   const fpsWindowRef = useRef({ startMs: 0, frames: 0 });
+  const autoRecoverRef = useRef({ lastTs: 0 });
 
   const clearProcessedFrame = useCallback(() => {
     const outputCanvas = processedCanvasRef.current;
@@ -182,6 +183,46 @@ export default function LiveView() {
       window.clearInterval(id);
     };
   }, [selectedCamera?.camera_id]);
+
+  useEffect(() => {
+    if (!liveFeedEnabled || isClientDeviceMode || !selectedCamera?.camera_id) return;
+    const errText = String(runtimeInfo?.last_error || '').toLowerCase();
+    if (!errText) return;
+    const isOpenError =
+      errText.includes('could not open camera stream') ||
+      errText.includes('failed to read camera frame') ||
+      errText.includes('open exception');
+    if (!isOpenError) return;
+
+    const now = Date.now();
+    if ((now - Number(autoRecoverRef.current.lastTs || 0)) < 2500) return;
+    autoRecoverRef.current.lastTs = now;
+
+    const defaultMode = String(eventInfo?.camera_mode || '').toLowerCase() === 'default';
+    if (defaultMode) {
+      const fallbackBrowserCamera = cameras.find((cam) => (
+        cam?.camera_id === 'EVENT_DEFAULT' ||
+        String(cam?.camera_type || '').toLowerCase() === 'browser'
+      ));
+      if (fallbackBrowserCamera && fallbackBrowserCamera.camera_id !== selectedCamera.camera_id) {
+        setSelectedCamera(fallbackBrowserCamera);
+        setStreamError('');
+        setDeviceError('');
+        setStreamNonce(Date.now());
+        return;
+      }
+    }
+
+    setStreamError('Camera runtime issue detected. Retrying stream...');
+    setStreamNonce(Date.now());
+  }, [
+    cameras,
+    eventInfo?.camera_mode,
+    isClientDeviceMode,
+    liveFeedEnabled,
+    runtimeInfo?.last_error,
+    selectedCamera?.camera_id,
+  ]);
 
   useEffect(() => {
     if (!liveFeedEnabled) {
