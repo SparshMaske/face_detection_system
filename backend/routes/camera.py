@@ -1,5 +1,6 @@
 import cv2
 import datetime
+import os
 import time
 from threading import Event, Lock, Thread
 
@@ -21,15 +22,21 @@ _LATEST_FRAMES_LOCK = Lock()
 _BACKGROUND_LOCK = Lock()
 _BACKGROUND_THREAD = None
 _BACKGROUND_STOP = Event()
+_PERF_CAPTURE_WIDTH = max(320, int(os.getenv('PERF_CAPTURE_WIDTH', '640') or 640))
+_PERF_CAPTURE_HEIGHT = max(240, int(os.getenv('PERF_CAPTURE_HEIGHT', '480') or 480))
 
 
 def _default_runtime(camera_id):
     return {
         'camera_id': camera_id,
         'fps': 0.0,
+        'ai_fps': 0.0,
         'window_start': time.monotonic(),
         'window_frames': 0,
+        'ai_window_start': time.monotonic(),
+        'ai_window_frames': 0,
         'last_frame_at': None,
+        'last_ai_frame_at': None,
         'source': 'idle',
         'processing_active': False,
         'camera_online': None,
@@ -69,6 +76,23 @@ def _mark_camera_frame(camera_id, source='unknown', processing_active=None, came
         item['last_error'] = last_error or ''
         if processing_active is not None:
             item['processing_active'] = bool(processing_active)
+        item['updated_at'] = datetime.datetime.utcnow().isoformat()
+
+
+def _mark_ai_frame(camera_id):
+    with _RUNTIME_LOCK:
+        item = _RUNTIME_STATS.setdefault(camera_id, _default_runtime(camera_id))
+        now_mono = time.monotonic()
+        item['ai_window_frames'] = int(item.get('ai_window_frames', 0)) + 1
+        start = float(item.get('ai_window_start', now_mono))
+        elapsed = max(0.0001, now_mono - start)
+        if elapsed >= 1.0:
+            current_fps = float(item.get('ai_window_frames', 0)) / elapsed
+            prior_fps = float(item.get('ai_fps', 0.0) or 0.0)
+            item['ai_fps'] = current_fps if prior_fps <= 0 else ((prior_fps * 0.6) + (current_fps * 0.4))
+            item['ai_window_start'] = now_mono
+            item['ai_window_frames'] = 0
+        item['last_ai_frame_at'] = datetime.datetime.utcnow().isoformat()
         item['updated_at'] = datetime.datetime.utcnow().isoformat()
 
 
@@ -123,6 +147,12 @@ def _apply_capture_settings(cap, camera):
         stream_url = str(getattr(camera, 'stream_url', '') or '').strip()
         camera_type = str(getattr(camera, 'camera_type', '') or '').lower()
         is_local_webcam = stream_url in ('', '0') or camera_type in ('webcam', 'usb', 'default')
+        if is_local_webcam:
+            # Force a realtime-friendly profile for local webcam capture.
+            if width <= 0 or width > 1280:
+                width = _PERF_CAPTURE_WIDTH
+            if height <= 0 or height > 720:
+                height = _PERF_CAPTURE_HEIGHT
         if width > 0:
             cap.set(cv2.CAP_PROP_FRAME_WIDTH, float(width))
         if height > 0:
@@ -337,6 +367,8 @@ def _background_worker_loop(app):
                     fr_service,
                     last_inactive_cleanup,
                 )
+            if bool((meta or {}).get('ai_processed')):
+                _mark_ai_frame(selected_camera_id)
             _mark_camera_frame(
                 selected_camera_id,
                 source='background',
@@ -385,6 +417,7 @@ def _ensure_background_worker():
 def _apply_event_processing(frame, camera, fr_service, last_inactive_cleanup):
     meta = {
         'event_active': False,
+        'ai_processed': False,
         'reason': 'unknown',
         'stats': None,
     }
@@ -412,6 +445,7 @@ def _apply_event_processing(frame, camera, fr_service, last_inactive_cleanup):
                     meta['stats'] = stats
                 else:
                     frame = result
+                meta['ai_processed'] = True
                 meta['reason'] = 'processed'
         else:
             meta['reason'] = 'event_inactive'
@@ -548,6 +582,8 @@ def stream_feed(camera_id):
                         fr_service,
                         last_inactive_cleanup,
                     )
+                    if bool((meta or {}).get('ai_processed')):
+                        _mark_ai_frame(camera.camera_id)
                 _mark_camera_frame(
                     camera.camera_id,
                     source='live-stream',
@@ -602,6 +638,20 @@ def process_client_frame():
     if cam is None:
         return jsonify({'error': 'Camera not found'}), 404
 
+    try:
+        from routes.events import get_event_state_snapshot
+        event_state = get_event_state_snapshot(sync=True) or {}
+    except Exception:
+        event_state = {}
+    workflow_active = bool(event_state.get('workflow_active'))
+    selected_camera_id = str(event_state.get('selected_camera_id') or '').strip()
+    strict_backend_only = bool(current_app.config.get('ENFORCE_BACKEND_CAMERA_MODE', True))
+    if strict_backend_only and workflow_active and (cam.camera_type or '').lower() == 'browser':
+        if selected_camera_id in ('', cam.camera_id, 'EVENT_DEFAULT'):
+            return jsonify({
+                'error': 'Realtime performance mode requires backend camera source. Use Existing Camera or RTSP in Event Scheduler.',
+            }), 409
+
     upload = request.files.get('frame')
     frame_bytes = upload.read() if upload is not None else request.get_data(cache=False)
     if not frame_bytes:
@@ -624,6 +674,8 @@ def process_client_frame():
     frame, last_cleanup, meta = _apply_event_processing(frame, cam, fr_service, last_cleanup)
     with _CLIENT_CLEANUP_LOCK:
         _CLIENT_CLEANUP_TIMES[cam.camera_id] = last_cleanup
+    if bool((meta or {}).get('ai_processed')):
+        _mark_ai_frame(cam.camera_id)
     _mark_camera_frame(
         cam.camera_id,
         source='client-frame',
@@ -673,8 +725,15 @@ def runtime_status():
             age_sec = (datetime.datetime.utcnow() - last_dt).total_seconds()
             if age_sec > 3.0:
                 runtime['fps'] = 0.0
+        last_ai_frame_at = runtime.get('last_ai_frame_at')
+        if last_ai_frame_at:
+            last_ai_dt = datetime.datetime.fromisoformat(str(last_ai_frame_at))
+            ai_age_sec = (datetime.datetime.utcnow() - last_ai_dt).total_seconds()
+            if ai_age_sec > 3.0:
+                runtime['ai_fps'] = 0.0
     except Exception:
         runtime['fps'] = float(runtime.get('fps') or 0.0)
+        runtime['ai_fps'] = float(runtime.get('ai_fps') or 0.0)
 
     try:
         from routes.events import is_event_active_for_camera

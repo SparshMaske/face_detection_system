@@ -38,6 +38,16 @@ class Config:
     UNKNOWN_FACE_MIN_FRAMES = int(os.getenv('UNKNOWN_FACE_MIN_FRAMES', 3))
     SESSION_GRACE_PERIOD = float(os.getenv('SESSION_GRACE_PERIOD', 2.0))
     MAX_VISITOR_IDENTITIES = int(os.getenv('MAX_VISITOR_IDENTITIES', 99999))
+    # Realtime performance tuning
+    FACE_MODEL_NAME = os.getenv('FACE_MODEL_NAME', 'buffalo_s')
+    FACE_DET_SIZE = int(os.getenv('FACE_DET_SIZE', 320))
+    RECOGNITION_INTERVAL_FRAMES = int(os.getenv('RECOGNITION_INTERVAL_FRAMES', 3))
+    DB_COMMIT_INTERVAL_MS = int(os.getenv('DB_COMMIT_INTERVAL_MS', 1200))
+    MAX_EVENT_MATCH_CANDIDATES = int(os.getenv('MAX_EVENT_MATCH_CANDIDATES', 256))
+    ASYNC_VISITOR_PDF = os.getenv('ASYNC_VISITOR_PDF', '1').strip().lower() in ('1', 'true', 'yes', 'on')
+    ENFORCE_BACKEND_CAMERA_MODE = os.getenv('ENFORCE_BACKEND_CAMERA_MODE', '1').strip().lower() in ('1', 'true', 'yes', 'on')
+    PERF_CAPTURE_WIDTH = int(os.getenv('PERF_CAPTURE_WIDTH', 640))
+    PERF_CAPTURE_HEIGHT = int(os.getenv('PERF_CAPTURE_HEIGHT', 480))
     
     # CORS
     CORS_ORIGINS = ["http://localhost:3000", "http://127.0.0.1:3000"]

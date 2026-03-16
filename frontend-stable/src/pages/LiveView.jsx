@@ -510,8 +510,10 @@ export default function LiveView() {
     ? `${String(api.defaults.baseURL).replace(/\/$/, '')}/camera/feed/${selectedCamera.camera_id}?t=${streamNonce}`
     : '';
   const backendFps = Number(runtimeInfo?.fps || 0);
-  const effectiveFps = isClientDeviceMode ? liveFps : backendFps;
-  const fpsLabel = `${Math.max(0, effectiveFps).toFixed(1)} FPS`;
+  const aiFps = Number(runtimeInfo?.ai_fps || 0);
+  const displayFps = isClientDeviceMode ? liveFps : backendFps;
+  const displayFpsLabel = `${Math.max(0, displayFps).toFixed(1)} FPS`;
+  const aiFpsLabel = `${Math.max(0, aiFps).toFixed(1)} FPS`;
 
   if (loading) return <div className="p-6">Loading cameras...</div>;
   if (error) return <div className="p-6 text-red-600">{error}</div>;
@@ -565,7 +567,12 @@ export default function LiveView() {
       </div>
       {eventInfo?.event_name && (
         <div className="text-sm text-gray-600">
-          Event: <strong>{eventInfo.event_name}</strong> | Status: <strong>{eventInfo.status}</strong> | Feed: <strong>{liveFeedEnabled ? 'On' : 'Off'}</strong> | FPS: <strong>{fpsLabel}</strong>
+          Event: <strong>{eventInfo.event_name}</strong> | Status: <strong>{eventInfo.status}</strong> | Feed: <strong>{liveFeedEnabled ? 'On' : 'Off'}</strong> | Display FPS: <strong>{displayFpsLabel}</strong> | AI FPS: <strong>{aiFpsLabel}</strong>
+        </div>
+      )}
+      {isClientDeviceMode && eventInfo?.status === 'active' && (
+        <div className="text-sm text-amber-500">
+          Realtime performance mode is optimized for backend-owned cameras (Existing/RTSP).
         </div>
       )}
       {runtimeInfo?.last_error && !isClientDeviceMode && (

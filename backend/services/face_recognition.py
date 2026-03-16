@@ -1,11 +1,13 @@
 import datetime
 import os
 import re
+import time
+from threading import Thread
 from typing import Dict, List, Optional, Set, Tuple
 
 import cv2
 import numpy as np
-from flask import current_app
+from flask import current_app, has_app_context
 from insightface.app import FaceAnalysis
 
 from models import db
@@ -23,12 +25,18 @@ class FaceRecognitionService:
 
     def _initialize(self):
         print("Initializing InsightFace model...")
+        model_name = os.getenv('FACE_MODEL_NAME', 'buffalo_s')
+        det_size = int(os.getenv('FACE_DET_SIZE', 320) or 320)
+        if has_app_context():
+            model_name = str(current_app.config.get('FACE_MODEL_NAME', model_name) or model_name)
+            det_size = int(current_app.config.get('FACE_DET_SIZE', det_size) or det_size)
+        det_size = max(224, min(640, det_size))
         self.app = FaceAnalysis(
-            name='buffalo_l',
+            name=model_name,
             providers=['CPUExecutionProvider'],
             allowed_modules=['detection', 'recognition'],
         )
-        self.app.prepare(ctx_id=0, det_size=(640, 640))
+        self.app.prepare(ctx_id=0, det_size=(det_size, det_size))
         print("InsightFace model loaded.")
 
         self._embeddings: Dict[int, np.ndarray] = {}
@@ -45,6 +53,10 @@ class FaceRecognitionService:
         self._event_embedding_history: Dict[int, List[np.ndarray]] = {}
         self._event_display_ids: Dict[int, str] = {}
         self._event_next_display_num: int = 1
+        self._recent_event_matches: List[int] = []
+        self._frame_index_by_camera: Dict[str, int] = {}
+        self._pending_db_changes: bool = False
+        self._last_db_commit_mono: float = time.monotonic()
         cascade_path = os.path.join(cv2.data.haarcascades, 'haarcascade_frontalface_default.xml')
         self._fallback_face_cascade = cv2.CascadeClassifier(cascade_path)
 
@@ -359,6 +371,114 @@ class FaceRecognitionService:
             return f"event:{event_name}:{start_dt.isoformat()}:{end_dt.isoformat()}"
         return None
 
+    def _commit_if_needed(self, changed=False, force=False):
+        if changed:
+            self._pending_db_changes = True
+        if not self._pending_db_changes:
+            return False
+
+        interval_ms = 1200
+        if has_app_context():
+            interval_ms = int(current_app.config.get('DB_COMMIT_INTERVAL_MS', interval_ms) or interval_ms)
+        interval_sec = max(0.08, float(interval_ms) / 1000.0)
+        now_mono = time.monotonic()
+        if not force and (now_mono - self._last_db_commit_mono) < interval_sec:
+            return False
+
+        try:
+            db.session.commit()
+            self._pending_db_changes = False
+            self._last_db_commit_mono = now_mono
+            return True
+        except Exception as exc:
+            db.session.rollback()
+            self._pending_db_changes = False
+            if has_app_context():
+                current_app.logger.warning("Failed to persist recognition update: %s", exc)
+            return False
+
+    def _touch_recent_event_match(self, visitor_db_id: Optional[int]):
+        if not visitor_db_id:
+            return
+        self._recent_event_matches = [vid for vid in self._recent_event_matches if vid != visitor_db_id]
+        self._recent_event_matches.insert(0, int(visitor_db_id))
+        if len(self._recent_event_matches) > 256:
+            self._recent_event_matches = self._recent_event_matches[:256]
+
+    def _iter_recent_tracks(self, now_local: datetime.datetime, camera_db_id: Optional[int], max_age_sec: float = 2.4):
+        for visitor_db_id, track in list(self._active_tracks.items()):
+            if camera_db_id is not None and track.get('camera_id') != camera_db_id:
+                continue
+            bbox = track.get('bbox')
+            if bbox is None:
+                continue
+            last_seen = track.get('last_seen', now_local)
+            if (now_local - last_seen).total_seconds() > float(max_age_sec):
+                continue
+            yield visitor_db_id, track
+
+    def _fast_detect_bboxes(self, frame):
+        cascade = self._fallback_face_cascade
+        if cascade is None or cascade.empty():
+            return []
+        try:
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            detections = cascade.detectMultiScale(
+                gray,
+                scaleFactor=1.18,
+                minNeighbors=4,
+                minSize=(46, 46),
+            )
+        except Exception:
+            return []
+        result = []
+        for (x, y, w, h) in detections:
+            result.append((int(x), int(y), int(x + w), int(y + h)))
+        return result
+
+    def _update_tracks_from_fast_detections(self, detections, now_local, camera_db_id: Optional[int]):
+        if not detections:
+            return
+        used_tracks = set()
+        for det_bbox in detections:
+            best_db_id = None
+            best_iou = 0.0
+            for visitor_db_id, track in self._iter_recent_tracks(now_local, camera_db_id, max_age_sec=4.5):
+                if visitor_db_id in used_tracks:
+                    continue
+                iou = self._iou(track.get('bbox'), det_bbox)
+                if iou > best_iou:
+                    best_iou = iou
+                    best_db_id = visitor_db_id
+            if best_db_id is not None and best_iou >= 0.14:
+                track = self._active_tracks.get(best_db_id)
+                if track is not None:
+                    track['bbox'] = det_bbox
+                    track['last_seen'] = now_local
+                    used_tracks.add(best_db_id)
+
+    def _draw_active_tracks_overlay(self, frame, now_local, camera_db_id: Optional[int], score_hint: Optional[float] = None):
+        count = 0
+        for visitor_db_id, track in self._iter_recent_tracks(now_local, camera_db_id, max_age_sec=3.2):
+            bbox = track.get('bbox')
+            if bbox is None:
+                continue
+            label = self._get_or_assign_event_display_id(visitor_db_id)
+            if score_hint is not None:
+                label = f"{label} ({score_hint:.2f})"
+            self._draw_papp_style_box(
+                frame,
+                bbox,
+                label,
+                (0, 255, 0),
+                thickness=1,
+                font_scale=0.55,
+                text_thickness=1,
+                y_offset=-10,
+            )
+            count += 1
+        return count
+
     def _load_event_identity_from_db(
         self,
         event_start: Optional[datetime.datetime],
@@ -413,6 +533,8 @@ class FaceRecognitionService:
         self._active_event_key = event_key
         self._active_tracks = {}
         self._pending_candidates = []
+        self._recent_event_matches = []
+        self._frame_index_by_camera = {}
 
         start_dt = self._normalize_datetime_value((event_context or {}).get('start_time'))
         end_dt = self._normalize_datetime_value((event_context or {}).get('end_time'))
@@ -484,15 +606,52 @@ class FaceRecognitionService:
         self._event_embedding_history[visitor_db_id] = self._dedupe_and_limit_embeddings(samples, limit=limit)
         self._event_visitor_ids.add(visitor_db_id)
 
-    def _match_event_visitor(self, embedding: np.ndarray, threshold: float):
+    def _match_event_visitor(self, embedding: np.ndarray, threshold: float, camera_db_id: Optional[int] = None):
         best_db_id = None
         best_score = -1.0
-        for db_id in sorted(self._event_visitor_ids):
+        max_candidates = 256
+        if has_app_context():
+            max_candidates = int(current_app.config.get('MAX_EVENT_MATCH_CANDIDATES', max_candidates) or max_candidates)
+        max_candidates = max(24, max_candidates)
+
+        prioritized_ids = []
+        seen = set()
+        for visitor_db_id, track in self._active_tracks.items():
+            if camera_db_id is not None and track.get('camera_id') != camera_db_id:
+                continue
+            if visitor_db_id in self._event_visitor_ids and visitor_db_id not in seen:
+                prioritized_ids.append(visitor_db_id)
+                seen.add(visitor_db_id)
+        for visitor_db_id in self._recent_event_matches:
+            if visitor_db_id in self._event_visitor_ids and visitor_db_id not in seen:
+                prioritized_ids.append(visitor_db_id)
+                seen.add(visitor_db_id)
+
+        if max_candidates > 0:
+            remaining_slots = max(0, max_candidates - len(prioritized_ids))
+            if remaining_slots > 0:
+                for db_id in sorted(self._event_visitor_ids):
+                    if db_id in seen:
+                        continue
+                    prioritized_ids.append(db_id)
+                    seen.add(db_id)
+                    remaining_slots -= 1
+                    if remaining_slots <= 0:
+                        break
+        else:
+            for db_id in sorted(self._event_visitor_ids):
+                if db_id in seen:
+                    continue
+                prioritized_ids.append(db_id)
+                seen.add(db_id)
+
+        for db_id in prioritized_ids:
             score = self._best_similarity_in_samples(embedding, self._event_embedding_history.get(db_id, []))
             if score > best_score:
                 best_score = score
                 best_db_id = db_id
         if best_db_id is not None and best_score >= threshold:
+            self._touch_recent_event_match(best_db_id)
             return best_db_id, best_score
         return None, best_score
 
@@ -578,14 +737,18 @@ class FaceRecognitionService:
         if matched_staff is not None:
             return 'staff', matched_staff, staff_score
 
-        matched_db_id, matched_score = self._match_event_visitor(embedding, visitor_threshold)
+        matched_db_id, matched_score = self._match_recent_active_track(
+            embedding,
+            bbox,
+            now_local,
+            camera_db_id,
+            base_threshold=visitor_threshold,
+        )
         if matched_db_id is None:
-            matched_db_id, matched_score = self._match_recent_active_track(
+            matched_db_id, matched_score = self._match_event_visitor(
                 embedding,
-                bbox,
-                now_local,
-                camera_db_id,
-                base_threshold=visitor_threshold,
+                visitor_threshold,
+                camera_db_id=camera_db_id,
             )
         if matched_db_id is not None:
             return 'visitor', matched_db_id, matched_score
@@ -675,17 +838,39 @@ class FaceRecognitionService:
         event_start: Optional[datetime.datetime] = None,
         event_end: Optional[datetime.datetime] = None,
     ):
-        try:
-            from services.report_generator import ReportGenerator
-            visitor = Visitor.query.get(visitor_db_id)
-            if visitor:
-                ReportGenerator().generate_visitor_pdf(
-                    visitor,
-                    event_start=event_start,
-                    event_end=event_end,
-                )
-        except Exception as exc:
-            current_app.logger.warning("Visitor PDF generation failed for visitor_id=%s: %s", visitor_db_id, exc)
+        def _run_generation(app_obj=None):
+            try:
+                if app_obj is not None:
+                    with app_obj.app_context():
+                        from services.report_generator import ReportGenerator
+                        visitor = Visitor.query.get(visitor_db_id)
+                        if visitor:
+                            ReportGenerator().generate_visitor_pdf(
+                                visitor,
+                                event_start=event_start,
+                                event_end=event_end,
+                            )
+                else:
+                    from services.report_generator import ReportGenerator
+                    visitor = Visitor.query.get(visitor_db_id)
+                    if visitor:
+                        ReportGenerator().generate_visitor_pdf(
+                            visitor,
+                            event_start=event_start,
+                            event_end=event_end,
+                        )
+            except Exception as exc:
+                if has_app_context():
+                    current_app.logger.warning("Visitor PDF generation failed for visitor_id=%s: %s", visitor_db_id, exc)
+
+        async_enabled = True
+        if has_app_context():
+            async_enabled = bool(current_app.config.get('ASYNC_VISITOR_PDF', True))
+        if async_enabled and has_app_context():
+            app_obj = current_app._get_current_object()
+            Thread(target=_run_generation, args=(app_obj,), daemon=True).start()
+            return
+        _run_generation()
 
     def _finalize_absent_sessions(
         self,
@@ -819,6 +1004,7 @@ class FaceRecognitionService:
         min_face_area = int(cfg.get('MIN_FACE_AREA', 11000))
 
         camera_db_id = getattr(camera, 'id', None)
+        camera_key = str(getattr(camera, 'camera_id', '') or (camera_db_id if camera_db_id is not None else 'GLOBAL'))
         camera_type = str(getattr(camera, 'camera_type', '') or '').lower()
         is_browser_camera = camera_type == 'browser'
         if is_browser_camera:
@@ -830,12 +1016,38 @@ class FaceRecognitionService:
             min_face_area = min(min_face_area, 2600)
             tilt_threshold = max(tilt_threshold, 0.45)
 
+        frame_index = int(self._frame_index_by_camera.get(camera_key, 0)) + 1
+        self._frame_index_by_camera[camera_key] = frame_index
+        recognition_interval = max(1, int(cfg.get('RECOGNITION_INTERVAL_FRAMES', 3) or 3))
+        if is_browser_camera:
+            recognition_interval = max(recognition_interval, 4)
+        has_recent_tracks = any(True for _ in self._iter_recent_tracks(now_local, camera_db_id, max_age_sec=2.2))
+        run_full_recognition = (frame_index % recognition_interval) == 0 or not has_recent_tracks
+
         event_start = event_context.get('start_time') if event_context else None
         event_end = event_context.get('end_time') if event_context else None
+        if not run_full_recognition:
+            detections = self._fast_detect_bboxes(frame)
+            self._update_tracks_from_fast_detections(detections, now_local, camera_db_id)
+            active_overlay_count = self._draw_active_tracks_overlay(frame, now_local, camera_db_id)
+            self._purge_pending_candidates(now_local)
+            self._commit_if_needed(changed=False, force=False)
+            stats = {
+                'faces_detected': int(max(len(detections), active_overlay_count)),
+                'staff_matches': 0,
+                'new_visitors': 0,
+                'known_visitors': int(active_overlay_count),
+                'rejected_faces': 0,
+            }
+            if return_stats:
+                return frame, stats
+            return frame
+
         faces = self._detect_faces(frame)
         valid_db_ids = set()
         invalid_bboxes = []
         changed = False
+        force_commit = False
         stats = {
             'faces_detected': int(len(faces)),
             'staff_matches': 0,
@@ -975,6 +1187,7 @@ class FaceRecognitionService:
                 rescue_db_id, rescue_score = self._match_event_visitor(
                     stable_embedding,
                     max(0.35, similarity_threshold - 0.06),
+                    camera_db_id=camera_db_id,
                 )
                 if rescue_db_id is None:
                     rescue_db_id, rescue_score = self._match_recent_active_track(
@@ -1004,19 +1217,21 @@ class FaceRecognitionService:
                                 visitor.primary_image_path = session_rel_path
                                 db.session.add(VisitorImage(visitor_id=visitor.id, image_path=session_rel_path))
                                 changed = True
+                                force_commit = True
 
                         if rescue_score < 0.995:
                             updated = self._append_embedding_sample(visitor.id, stable_embedding, limit=5)
                             if updated is not None:
                                 visitor.embedding = updated.astype(np.float32).tobytes()
+                                changed = True
                         self._append_event_embedding_sample(visitor.id, stable_embedding, limit=5)
+                        self._touch_recent_event_match(visitor.id)
 
                         event_display_id = self._get_or_assign_event_display_id(visitor.id)
                         label = f"{event_display_id} ({max(0.0, rescue_score):.2f})"
                         color = (0, 255, 0)
                         valid_db_ids.add(visitor.id)
                         stats['known_visitors'] += 1
-                        changed = True
                         self._draw_papp_style_box(frame, current_bbox, label, color, thickness=1, font_scale=0.55, text_thickness=1, y_offset=-10)
                         continue
 
@@ -1056,6 +1271,7 @@ class FaceRecognitionService:
                 self._event_visitor_ids.add(visitor.id)
                 self._event_embedding_history[visitor.id] = [stable_embedding]
                 self._visitor_codes[visitor.id] = visitor_code
+                self._touch_recent_event_match(visitor.id)
                 self._active_tracks[visitor.id] = {
                     'last_seen': now_local,
                     'bbox': current_bbox,
@@ -1069,6 +1285,7 @@ class FaceRecognitionService:
                 label = f"{event_display_id} (New)"
                 color = (0, 255, 255)
                 changed = True
+                force_commit = True
             else:
                 visitor = Visitor.query.get(matched_db_id)
                 if visitor is None:
@@ -1091,6 +1308,7 @@ class FaceRecognitionService:
                         visitor.primary_image_path = session_rel_path
                         db.session.add(VisitorImage(visitor_id=visitor.id, image_path=session_rel_path))
                         changed = True
+                        force_commit = True
 
                 # Ensure reports always have a usable source image for face-to-shoulder crop.
                 if not self._visitor_has_usable_image(visitor):
@@ -1099,18 +1317,20 @@ class FaceRecognitionService:
                         visitor.primary_image_path = fallback_rel_path
                         db.session.add(VisitorImage(visitor_id=visitor.id, image_path=fallback_rel_path))
                         changed = True
+                        force_commit = True
 
                 if matched_score < 0.995:
                     updated = self._append_embedding_sample(visitor.id, emb, limit=5)
                     if updated is not None:
                         visitor.embedding = updated.astype(np.float32).tobytes()
+                        changed = True
                 self._append_event_embedding_sample(visitor.id, emb, limit=5)
+                self._touch_recent_event_match(visitor.id)
                 event_display_id = self._get_or_assign_event_display_id(visitor.id)
                 label = f"{event_display_id} ({max(0.0, matched_score):.2f})"
                 color = (0, 255, 0)
                 valid_db_ids.add(visitor.id)
                 stats['known_visitors'] += 1
-                changed = True
 
             self._draw_papp_style_box(frame, current_bbox, label, color, thickness=1, font_scale=0.55, text_thickness=1, y_offset=-10)
 
@@ -1123,6 +1343,7 @@ class FaceRecognitionService:
             camera_db_id=camera_db_id,
         ):
             changed = True
+            force_commit = True
 
         if not faces:
             fallback_count = self._draw_fallback_face_boxes(frame)
@@ -1130,12 +1351,7 @@ class FaceRecognitionService:
 
         self._purge_pending_candidates(now_local)
 
-        if changed:
-            try:
-                db.session.commit()
-            except Exception as exc:
-                db.session.rollback()
-                current_app.logger.warning("Failed to persist recognition update: %s", exc)
+        self._commit_if_needed(changed=changed, force=force_commit)
 
         if return_stats:
             return frame, stats

@@ -45,6 +45,51 @@ DEFAULT_SETTINGS = {
         'value_type': 'int',
         'description': 'Maximum number of unique visitor identities allowed in recognition memory',
     },
+    'recognition_interval_frames': {
+        'value': 3,
+        'value_type': 'int',
+        'description': 'Run full face recognition every N frames (intermediate frames use fast tracking overlay)',
+    },
+    'db_commit_interval_ms': {
+        'value': 1200,
+        'value_type': 'int',
+        'description': 'Minimum interval between database commits during live recognition',
+    },
+    'max_event_match_candidates': {
+        'value': 256,
+        'value_type': 'int',
+        'description': 'Maximum event visitor embeddings checked per recognition pass',
+    },
+    'async_visitor_pdf': {
+        'value': True,
+        'value_type': 'bool',
+        'description': 'Generate visitor PDFs asynchronously to keep frame loop non-blocking',
+    },
+    'enforce_backend_camera_mode': {
+        'value': True,
+        'value_type': 'bool',
+        'description': 'Require backend-owned cameras for active event AI processing (better realtime FPS)',
+    },
+    'face_model_name': {
+        'value': 'buffalo_s',
+        'value_type': 'string',
+        'description': 'InsightFace model family used for detection/recognition',
+    },
+    'face_det_size': {
+        'value': 320,
+        'value_type': 'int',
+        'description': 'Detector input size (square) for face analysis model',
+    },
+    'perf_capture_width': {
+        'value': 640,
+        'value_type': 'int',
+        'description': 'Performance profile capture width for local webcams',
+    },
+    'perf_capture_height': {
+        'value': 480,
+        'value_type': 'int',
+        'description': 'Performance profile capture height for local webcams',
+    },
 }
 
 CONFIG_KEY_MAP = {
@@ -56,6 +101,15 @@ CONFIG_KEY_MAP = {
     'tilt_threshold': ('TILT_THRESHOLD', float),
     'min_face_area': ('MIN_FACE_AREA', int),
     'max_visitor_identities': ('MAX_VISITOR_IDENTITIES', int),
+    'recognition_interval_frames': ('RECOGNITION_INTERVAL_FRAMES', int),
+    'db_commit_interval_ms': ('DB_COMMIT_INTERVAL_MS', int),
+    'max_event_match_candidates': ('MAX_EVENT_MATCH_CANDIDATES', int),
+    'async_visitor_pdf': ('ASYNC_VISITOR_PDF', bool),
+    'enforce_backend_camera_mode': ('ENFORCE_BACKEND_CAMERA_MODE', bool),
+    'face_model_name': ('FACE_MODEL_NAME', str),
+    'face_det_size': ('FACE_DET_SIZE', int),
+    'perf_capture_width': ('PERF_CAPTURE_WIDTH', int),
+    'perf_capture_height': ('PERF_CAPTURE_HEIGHT', int),
 }
 
 
@@ -88,6 +142,13 @@ def _apply_runtime_config(key, value):
     if key not in CONFIG_KEY_MAP:
         return
     config_key, caster = CONFIG_KEY_MAP[key]
+    if caster is bool:
+        if isinstance(value, bool):
+            current_app.config[config_key] = value
+            return
+        lowered = str(value).strip().lower()
+        current_app.config[config_key] = lowered in ('1', 'true', 'yes', 'on')
+        return
     current_app.config[config_key] = caster(value)
 
 
