@@ -289,6 +289,76 @@ class ReportGenerator:
                     return best
         return best
 
+    def _detect_primary_face_bbox_with_retries(self, image) -> Optional[Tuple[int, int, int, int]]:
+        """
+        More robust face lookup for report snapshots:
+        1) original image
+        2) equalized grayscale image
+        3) upscaled image (helps small/soft faces)
+        """
+        bbox = self._detect_primary_face_bbox(image)
+        if bbox is not None:
+            return bbox
+
+        try:
+            gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+            eq = cv2.equalizeHist(gray)
+            eq_bgr = cv2.cvtColor(eq, cv2.COLOR_GRAY2BGR)
+            bbox = self._detect_primary_face_bbox(eq_bgr)
+            if bbox is not None:
+                return bbox
+        except Exception:
+            pass
+
+        try:
+            h, w = image.shape[:2]
+            if min(h, w) < 900:
+                scale = 1.55
+                up = cv2.resize(
+                    image,
+                    (max(1, int(w * scale)), max(1, int(h * scale))),
+                    interpolation=cv2.INTER_CUBIC,
+                )
+                up_bbox = self._detect_primary_face_bbox(up)
+                if up_bbox is not None:
+                    x, y, fw, fh = up_bbox
+                    return (
+                        int(x / scale),
+                        int(y / scale),
+                        int(fw / scale),
+                        int(fh / scale),
+                    )
+        except Exception:
+            pass
+        return None
+
+    def _is_head_shoulder_crop(self, crop) -> bool:
+        """
+        Validate that the crop looks like a portrait (head to shoulder),
+        not a torso-only or background-only patch.
+        """
+        if crop is None or getattr(crop, 'size', 0) == 0:
+            return False
+        face_bbox = self._detect_primary_face_bbox_with_retries(crop)
+        if face_bbox is None:
+            return False
+
+        x, y, w, h = face_bbox
+        ch, cw = crop.shape[:2]
+        if cw <= 0 or ch <= 0 or w <= 0 or h <= 0:
+            return False
+
+        face_ratio = float(w * h) / float(cw * ch)
+        # Head should be clearly visible but not occupy the whole crop.
+        if face_ratio < 0.08 or face_ratio > 0.62:
+            return False
+
+        # Face center should sit in upper/middle portion for head-shoulder framing.
+        cy = float(y + (h / 2.0)) / float(ch)
+        if cy < 0.16 or cy > 0.58:
+            return False
+        return True
+
     def _prepare_face_to_shoulder_snapshot(self, image_path, visitor_code, allow_center_fallback=False):
         if not image_path or not os.path.exists(image_path):
             return None
@@ -296,7 +366,7 @@ class ReportGenerator:
             img = cv2.imread(image_path)
             if img is None:
                 return None
-            face_bbox = self._detect_primary_face_bbox(img)
+            face_bbox = self._detect_primary_face_bbox_with_retries(img)
             if face_bbox is None:
                 if not allow_center_fallback:
                     return None
@@ -311,7 +381,8 @@ class ReportGenerator:
                 crop = img[ny1:ny2, nx1:nx2]
                 if crop.size == 0:
                     return None
-
+                if not self._is_head_shoulder_crop(crop):
+                    return None
                 snapshots_dir = os.path.join(self.visitor_reports_dir, 'snapshots')
                 os.makedirs(snapshots_dir, exist_ok=True)
                 snapshot_path = os.path.join(
@@ -319,16 +390,16 @@ class ReportGenerator:
                     f"{visitor_code}_face_shoulder_{datetime.now().strftime('%Y%m%d%H%M%S')}.jpg",
                 )
                 cv2.imwrite(snapshot_path, crop)
-                if self._image_has_face(snapshot_path):
+                if self._image_has_valid_head_shoulder(snapshot_path):
                     return snapshot_path
                 return None
 
             x, y, w, h = face_bbox
             img_h, img_w = img.shape[:2]
             # Keep crop focused on person portrait (face to shoulder), avoid over-expanding to torso.
-            expand_x = int(w * 0.30)
-            expand_y_top = int(h * 0.35)
-            expand_y_bottom = int(h * 1.15)
+            expand_x = int(w * 0.22)
+            expand_y_top = int(h * 0.24)
+            expand_y_bottom = int(h * 0.95)
 
             nx1 = max(0, x - expand_x)
             ny1 = max(0, y - expand_y_top)
@@ -337,6 +408,18 @@ class ReportGenerator:
             crop = img[ny1:ny2, nx1:nx2]
             if crop.size == 0:
                 return None
+            if not self._is_head_shoulder_crop(crop):
+                # Mild second try with a bit more shoulder room.
+                expand_x = int(w * 0.28)
+                expand_y_top = int(h * 0.20)
+                expand_y_bottom = int(h * 1.08)
+                nx1 = max(0, x - expand_x)
+                ny1 = max(0, y - expand_y_top)
+                nx2 = min(img_w, x + w + expand_x)
+                ny2 = min(img_h, y + h + expand_y_bottom)
+                crop = img[ny1:ny2, nx1:nx2]
+                if crop.size == 0 or not self._is_head_shoulder_crop(crop):
+                    return None
 
             snapshots_dir = os.path.join(self.visitor_reports_dir, 'snapshots')
             os.makedirs(snapshots_dir, exist_ok=True)
@@ -345,11 +428,19 @@ class ReportGenerator:
                 f"{visitor_code}_face_shoulder_{datetime.now().strftime('%Y%m%d%H%M%S')}.jpg",
             )
             cv2.imwrite(snapshot_path, crop)
-            if self._image_has_face(snapshot_path):
+            if self._image_has_valid_head_shoulder(snapshot_path):
                 return snapshot_path
             return None
         except Exception:
             return None
+
+    def _image_has_valid_head_shoulder(self, image_path):
+        if not image_path or not os.path.exists(image_path):
+            return False
+        img = cv2.imread(image_path)
+        if img is None:
+            return False
+        return self._is_head_shoulder_crop(img)
 
     def _image_has_face(self, image_path):
         if not image_path or not os.path.exists(image_path):
@@ -357,7 +448,7 @@ class ReportGenerator:
         img = cv2.imread(image_path)
         if img is None:
             return False
-        return self._detect_primary_face_bbox(img) is not None
+        return self._detect_primary_face_bbox_with_retries(img) is not None
 
     def _latest_existing_snapshot(self, visitor_code, require_face=False):
         snapshots_dir = os.path.join(self.visitor_reports_dir, 'snapshots')
@@ -377,7 +468,7 @@ class ReportGenerator:
         if not require_face:
             return candidates[0]
         for path in candidates:
-            if self._image_has_face(path):
+            if self._image_has_valid_head_shoulder(path):
                 return path
         return None
 
@@ -408,7 +499,7 @@ class ReportGenerator:
             fallback = self._prepare_face_to_shoulder_snapshot(
                 candidates[0],
                 visitor_code,
-                allow_center_fallback=True,
+                allow_center_fallback=False,
             )
             if fallback and os.path.exists(fallback):
                 return fallback
