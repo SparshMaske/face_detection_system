@@ -198,6 +198,20 @@ export default function LiveView() {
     if ((now - Number(autoRecoverRef.current.lastTs || 0)) < 2500) return;
     autoRecoverRef.current.lastTs = now;
 
+    const preferredCameraId = String(eventInfo?.selected_camera_id || '').trim();
+    if (preferredCameraId && preferredCameraId !== selectedCamera.camera_id) {
+      const preferred = cameras.find((cam) => cam?.camera_id === preferredCameraId);
+      if (preferred) {
+        setSelectedCamera(preferred);
+        setStreamError('');
+        setDeviceError('');
+        setRuntimeInfo(null);
+        setStreamNonce(Date.now());
+        fetchCamerasAndEvent();
+        return;
+      }
+    }
+
     const defaultMode = String(eventInfo?.camera_mode || '').toLowerCase() === 'default';
     if (defaultMode) {
       const fallbackBrowserCamera = cameras.find((cam) => (
@@ -208,16 +222,21 @@ export default function LiveView() {
         setSelectedCamera(fallbackBrowserCamera);
         setStreamError('');
         setDeviceError('');
+        setRuntimeInfo(null);
         setStreamNonce(Date.now());
+        fetchCamerasAndEvent();
         return;
       }
     }
 
     setStreamError('Camera runtime issue detected. Retrying stream...');
     setStreamNonce(Date.now());
+    fetchCamerasAndEvent();
   }, [
     cameras,
     eventInfo?.camera_mode,
+    eventInfo?.selected_camera_id,
+    fetchCamerasAndEvent,
     isClientDeviceMode,
     liveFeedEnabled,
     runtimeInfo?.last_error,

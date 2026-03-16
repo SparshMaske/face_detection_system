@@ -535,6 +535,35 @@ def stream_feed(camera_id):
                     time.sleep(max(0.01, 1.0 / float(preview_fps)))
                     continue
 
+                # If this camera is currently owned by the active-event background worker,
+                # do not open a second capture handle from live stream route.
+                background_owns_camera = False
+                try:
+                    from routes.events import get_event_state_snapshot
+                    event_state = get_event_state_snapshot(sync=True) or {}
+                    selected_camera_id = str(event_state.get('selected_camera_id') or '').strip()
+                    background_owns_camera = bool(
+                        event_state.get('workflow_active') and selected_camera_id == camera.camera_id
+                    )
+                except Exception:
+                    background_owns_camera = False
+
+                if background_owns_camera:
+                    if cap is not None:
+                        cap.release()
+                        cap = None
+                    with _RUNTIME_LOCK:
+                        runtime_snapshot = dict(_RUNTIME_STATS.get(camera.camera_id, _default_runtime(camera.camera_id)))
+                    _set_runtime(
+                        camera.camera_id,
+                        source='live-stream-cache-wait',
+                        processing_active=True,
+                        camera_online=runtime_snapshot.get('camera_online'),
+                        last_error=runtime_snapshot.get('last_error') or '',
+                    )
+                    time.sleep(0.12)
+                    continue
+
                 if cap is None:
                     cap, open_err = _open_capture(camera, source)
                     if cap is None or not cap.isOpened():
