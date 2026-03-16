@@ -221,7 +221,7 @@ export default function LiveView() {
 
       if (typeof createImageBitmap === 'function') {
         const bitmap = await createImageBitmap(blob);
-        const scale = Math.min(viewportWidth / bitmap.width, viewportHeight / bitmap.height);
+        const scale = Math.max(viewportWidth / bitmap.width, viewportHeight / bitmap.height);
         const drawWidth = Math.max(1, Math.floor(bitmap.width * scale));
         const drawHeight = Math.max(1, Math.floor(bitmap.height * scale));
         const dx = Math.floor((viewportWidth - drawWidth) / 2);
@@ -236,7 +236,7 @@ export default function LiveView() {
         const img = new Image();
         const localUrl = URL.createObjectURL(blob);
         img.onload = () => {
-          const scale = Math.min(viewportWidth / img.naturalWidth, viewportHeight / img.naturalHeight);
+          const scale = Math.max(viewportWidth / img.naturalWidth, viewportHeight / img.naturalHeight);
           const drawWidth = Math.max(1, Math.floor(img.naturalWidth * scale));
           const drawHeight = Math.max(1, Math.floor(img.naturalHeight * scale));
           const dx = Math.floor((viewportWidth - drawWidth) / 2);
@@ -592,6 +592,9 @@ export default function LiveView() {
                     autoPlay
                     muted
                     playsInline
+                    disablePictureInPicture
+                    disableRemotePlayback
+                    controlsList="nodownload noplaybackrate noremoteplayback nofullscreen"
                     style={isSelfieMode ? { transform: 'scaleX(-1)' } : undefined}
                     className="absolute -left-[10000px] top-0 h-[1px] w-[1px] opacity-0 pointer-events-none"
                   />
@@ -623,11 +626,14 @@ export default function LiveView() {
                 autoPlay
                 muted
                 playsInline
+                disablePictureInPicture
+                disableRemotePlayback
+                controlsList="nodownload noplaybackrate noremoteplayback nofullscreen"
                 style={isSelfieMode ? { transform: 'scaleX(-1)' } : undefined}
                 className={
                   hasProcessedFrame
                     ? 'absolute -left-[10000px] top-0 h-[1px] w-[1px] opacity-0 pointer-events-none'
-                    : 'w-full h-full object-contain'
+                    : 'w-full h-full object-cover'
                 }
               />
               <canvas
@@ -642,7 +648,7 @@ export default function LiveView() {
               key={`${selectedCamera?.camera_id || 'camera'}-${streamNonce}`}
               src={streamSrc}
               alt="Live Feed" 
-              className="w-full h-full object-contain"
+              className="w-full h-full object-cover"
               style={{ imageRendering: 'auto' }}
               onError={() => setStreamError('Failed to load camera stream. Verify camera source and backend OpenCV access.')}
             />
