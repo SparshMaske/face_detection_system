@@ -643,14 +643,20 @@ def process_client_frame():
         event_state = get_event_state_snapshot(sync=True) or {}
     except Exception:
         event_state = {}
+    # Keep browser-client mode functional even when performance mode is enabled.
+    # Strict blocking was causing active events to stop detection entirely in default-camera flows.
     workflow_active = bool(event_state.get('workflow_active'))
     selected_camera_id = str(event_state.get('selected_camera_id') or '').strip()
     strict_backend_only = bool(current_app.config.get('ENFORCE_BACKEND_CAMERA_MODE', True))
     if strict_backend_only and workflow_active and (cam.camera_type or '').lower() == 'browser':
         if selected_camera_id in ('', cam.camera_id, 'EVENT_DEFAULT'):
-            return jsonify({
-                'error': 'Realtime performance mode requires backend camera source. Use Existing Camera or RTSP in Event Scheduler.',
-            }), 409
+            _set_runtime(
+                cam.camera_id,
+                source='client-frame',
+                processing_active=True,
+                camera_online=True,
+                last_error='Performance mode warning: backend-owned camera is recommended for higher FPS.',
+            )
 
     upload = request.files.get('frame')
     frame_bytes = upload.read() if upload is not None else request.get_data(cache=False)

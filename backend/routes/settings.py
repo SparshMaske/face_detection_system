@@ -66,7 +66,7 @@ DEFAULT_SETTINGS = {
         'description': 'Generate visitor PDFs asynchronously to keep frame loop non-blocking',
     },
     'enforce_backend_camera_mode': {
-        'value': True,
+        'value': False,
         'value_type': 'bool',
         'description': 'Require backend-owned cameras for active event AI processing (better realtime FPS)',
     },

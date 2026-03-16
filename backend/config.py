@@ -45,7 +45,7 @@ class Config:
     DB_COMMIT_INTERVAL_MS = int(os.getenv('DB_COMMIT_INTERVAL_MS', 1200))
     MAX_EVENT_MATCH_CANDIDATES = int(os.getenv('MAX_EVENT_MATCH_CANDIDATES', 256))
     ASYNC_VISITOR_PDF = os.getenv('ASYNC_VISITOR_PDF', '1').strip().lower() in ('1', 'true', 'yes', 'on')
-    ENFORCE_BACKEND_CAMERA_MODE = os.getenv('ENFORCE_BACKEND_CAMERA_MODE', '1').strip().lower() in ('1', 'true', 'yes', 'on')
+    ENFORCE_BACKEND_CAMERA_MODE = os.getenv('ENFORCE_BACKEND_CAMERA_MODE', '0').strip().lower() in ('1', 'true', 'yes', 'on')
     PERF_CAPTURE_WIDTH = int(os.getenv('PERF_CAPTURE_WIDTH', 640))
     PERF_CAPTURE_HEIGHT = int(os.getenv('PERF_CAPTURE_HEIGHT', 480))
     
