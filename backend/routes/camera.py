@@ -159,7 +159,8 @@ def _apply_capture_settings(cap, camera):
             cap.set(cv2.CAP_PROP_FRAME_HEIGHT, float(height))
         desired_fps = fps_limit
         if is_local_webcam:
-            desired_fps = max(desired_fps, 24)
+            # Keep local webcam paths in high-FPS mode by default.
+            desired_fps = max(desired_fps, 30)
         if desired_fps > 0:
             cap.set(cv2.CAP_PROP_FPS, float(max(1, min(60, desired_fps))))
         # Keep internal queue short to reduce latency/lag.
@@ -389,9 +390,10 @@ def _background_worker_loop(app):
         fps_limit = int(getattr(cam, 'fps_limit', 24) or 24)
         is_local_webcam = source == 0 or str(getattr(cam, 'camera_type', '') or '').lower() in ('webcam', 'usb', 'default')
         if is_local_webcam:
-            target_fps = max(15, min(30, fps_limit))
+            effective_limit = max(30, int(fps_limit or 0))
+            target_fps = max(20, min(30, effective_limit))
         else:
-            target_fps = max(6, min(25, fps_limit))
+            target_fps = max(8, min(25, int(fps_limit or 25)))
         time.sleep(max(0.02, 1.0 / float(target_fps)))
 
     if cap is not None:
@@ -517,7 +519,10 @@ def stream_feed(camera_id):
         source = 0 if stream_url in ('', '0') else stream_url
         camera_fps_limit = int(getattr(camera, 'fps_limit', 24) or 24)
         is_local_webcam = source == 0 or str(getattr(camera, 'camera_type', '') or '').lower() in ('webcam', 'usb', 'default')
-        preview_fps = max(15, min(30, camera_fps_limit)) if is_local_webcam else max(8, min(25, camera_fps_limit))
+        if is_local_webcam:
+            preview_fps = max(20, min(30, max(30, camera_fps_limit)))
+        else:
+            preview_fps = max(8, min(25, camera_fps_limit))
         try:
             while True:
                 # Prefer already-processed background frame to avoid camera handle contention.

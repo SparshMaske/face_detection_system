@@ -46,7 +46,7 @@ DEFAULT_SETTINGS = {
         'description': 'Maximum number of unique visitor identities allowed in recognition memory',
     },
     'recognition_interval_frames': {
-        'value': 3,
+        'value': 5,
         'value_type': 'int',
         'description': 'Run full face recognition every N frames (intermediate frames use fast tracking overlay)',
     },
@@ -81,12 +81,12 @@ DEFAULT_SETTINGS = {
         'description': 'Detector input size (square) for face analysis model',
     },
     'perf_capture_width': {
-        'value': 640,
+        'value': 512,
         'value_type': 'int',
         'description': 'Performance profile capture width for local webcams',
     },
     'perf_capture_height': {
-        'value': 480,
+        'value': 384,
         'value_type': 'int',
         'description': 'Performance profile capture height for local webcams',
     },
