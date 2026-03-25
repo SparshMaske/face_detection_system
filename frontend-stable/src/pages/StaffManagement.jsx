@@ -12,11 +12,23 @@ export default function StaffManagement() {
   const [newStaff, setNewStaff] = useState({
     staff_id: '', name: '', department: '', position: '', email: '', phone: ''
   });
-  const [images, setImages] = useState([]);
+  const [imageEntries, setImageEntries] = useState([]);
+  const [pendingCapture, setPendingCapture] = useState(null);
   const [cameraOptions, setCameraOptions] = useState([]);
   const [selectedCaptureCameraId, setSelectedCaptureCameraId] = useState('');
   const [captureLoading, setCaptureLoading] = useState(false);
   const [captureError, setCaptureError] = useState('');
+
+  useEffect(() => {
+    return () => {
+      imageEntries.forEach((item) => {
+        try { URL.revokeObjectURL(item.previewUrl); } catch (_) { /* noop */ }
+      });
+      if (pendingCapture?.previewUrl) {
+        try { URL.revokeObjectURL(pendingCapture.previewUrl); } catch (_) { /* noop */ }
+      }
+    };
+  }, [imageEntries, pendingCapture]);
 
   const fetchStaff = async () => {
     try {
@@ -71,7 +83,7 @@ export default function StaffManagement() {
       setError('Full Name is required');
       return;
     }
-    if (!images.length) {
+    if (!imageEntries.length) {
       setError('At least one image is required (upload or capture from camera).');
       return;
     }
@@ -81,14 +93,21 @@ export default function StaffManagement() {
         formData.append(key, value);
       }
     });
-    images.forEach((img) => formData.append('images', img));
+    imageEntries.forEach((img) => formData.append('images', img.file));
     
     try {
       await createStaff(formData);
       setIsModalOpen(false);
       fetchStaff();
       setNewStaff({ staff_id: '', name: '', department: '', position: '', email: '', phone: '' });
-      setImages([]);
+      imageEntries.forEach((item) => {
+        try { URL.revokeObjectURL(item.previewUrl); } catch (_) { /* noop */ }
+      });
+      setImageEntries([]);
+      if (pendingCapture?.previewUrl) {
+        try { URL.revokeObjectURL(pendingCapture.previewUrl); } catch (_) { /* noop */ }
+      }
+      setPendingCapture(null);
       setCameraOptions([]);
       setSelectedCaptureCameraId('');
     } catch (err) {
@@ -119,7 +138,16 @@ export default function StaffManagement() {
         `staff_capture_${Date.now()}.jpg`,
         { type: mime || 'image/jpeg' }
       );
-      setImages((prev) => [...prev, file]);
+      const previewUrl = URL.createObjectURL(file);
+      if (pendingCapture?.previewUrl) {
+        try { URL.revokeObjectURL(pendingCapture.previewUrl); } catch (_) { /* noop */ }
+      }
+      const selectedCamera = cameraOptions.find((cam) => cam.camera_id === selectedCaptureCameraId);
+      setPendingCapture({
+        file,
+        previewUrl,
+        cameraName: selectedCamera?.name || selectedCaptureCameraId,
+      });
     } catch (err) {
       let msg = err?.message || 'Failed to capture image from selected camera';
       const payload = err?.response?.data;
@@ -144,6 +172,49 @@ export default function StaffManagement() {
     } finally {
       setCaptureLoading(false);
     }
+  };
+
+  const handleUploadFiles = (e) => {
+    const files = Array.from(e.target.files || []);
+    if (!files.length) return;
+    const additions = files.map((file, idx) => ({
+      id: `upload-${Date.now()}-${idx}`,
+      file,
+      previewUrl: URL.createObjectURL(file),
+      source: 'upload',
+    }));
+    setImageEntries((prev) => [...prev, ...additions]);
+  };
+
+  const approvePendingCapture = () => {
+    if (!pendingCapture?.file || !pendingCapture?.previewUrl) return;
+    setImageEntries((prev) => [
+      ...prev,
+      {
+        id: `capture-${Date.now()}`,
+        file: pendingCapture.file,
+        previewUrl: pendingCapture.previewUrl,
+        source: 'capture',
+      },
+    ]);
+    setPendingCapture(null);
+  };
+
+  const discardPendingCapture = () => {
+    if (pendingCapture?.previewUrl) {
+      try { URL.revokeObjectURL(pendingCapture.previewUrl); } catch (_) { /* noop */ }
+    }
+    setPendingCapture(null);
+  };
+
+  const removeImageEntry = (id) => {
+    setImageEntries((prev) => {
+      const target = prev.find((item) => item.id === id);
+      if (target?.previewUrl) {
+        try { URL.revokeObjectURL(target.previewUrl); } catch (_) { /* noop */ }
+      }
+      return prev.filter((item) => item.id !== id);
+    });
   };
 
   if (loading) return <div className="p-6">Loading staff...</div>;
@@ -203,7 +274,7 @@ export default function StaffManagement() {
           <div>
             <label className="block text-sm mb-1">Upload Photos (required)</label>
             <input type="file" multiple accept="image/*" 
-              onChange={e => setImages(Array.from(e.target.files || []))} className="input" />
+              onChange={handleUploadFiles} className="input" />
           </div>
           <div className="space-y-2">
             <label className="block text-sm mb-1">Capture From Configured Camera (Raspberry/RTSP/Webcam)</label>
@@ -228,7 +299,48 @@ export default function StaffManagement() {
               </button>
             </div>
             {captureError && <div className="text-sm text-red-500">{captureError}</div>}
-            <div className="text-xs text-gray-500">Selected images: {images.length}</div>
+            {pendingCapture && (
+              <div className="rounded border border-cyan-500/50 p-2 bg-slate-900/30">
+                <div className="text-xs mb-2 text-cyan-300">
+                  Captured from {pendingCapture.cameraName}. Approve before saving.
+                </div>
+                <img
+                  src={pendingCapture.previewUrl}
+                  alt="Pending capture preview"
+                  className="w-32 h-32 object-cover rounded border border-slate-500"
+                />
+                <div className="flex gap-2 mt-2">
+                  <button type="button" className="btn btn-primary" onClick={approvePendingCapture}>
+                    Approve Capture
+                  </button>
+                  <button type="button" className="btn btn-secondary" onClick={discardPendingCapture}>
+                    Discard
+                  </button>
+                </div>
+              </div>
+            )}
+            <div className="text-xs text-gray-500">Selected images: {imageEntries.length}</div>
+            {imageEntries.length > 0 && (
+              <div className="grid grid-cols-3 sm:grid-cols-5 gap-2">
+                {imageEntries.map((item) => (
+                  <div key={item.id} className="relative rounded border border-slate-600 p-1 bg-black/20">
+                    <img
+                      src={item.previewUrl}
+                      alt="Selected staff"
+                      className="w-full h-20 object-cover rounded"
+                    />
+                    <button
+                      type="button"
+                      className="absolute top-1 right-1 text-[10px] px-1 py-0.5 rounded bg-red-600 text-white"
+                      onClick={() => removeImageEntry(item.id)}
+                    >
+                      x
+                    </button>
+                    <div className="text-[10px] mt-1 text-gray-400">{item.source}</div>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
 
           <div className="flex justify-end gap-2">
