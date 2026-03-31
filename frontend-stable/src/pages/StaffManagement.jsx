@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { getStaff, deleteStaff, createStaff } from '../services/staffService';
 import api from '../services/api';
 import Modal from '../components/Modal';
@@ -18,9 +18,18 @@ export default function StaffManagement() {
   const [selectedCaptureCameraId, setSelectedCaptureCameraId] = useState('');
   const [captureLoading, setCaptureLoading] = useState(false);
   const [captureError, setCaptureError] = useState('');
+  const [liveCaptureOpen, setLiveCaptureOpen] = useState(false);
+  const [liveCaptureBusy, setLiveCaptureBusy] = useState(false);
+  const [liveCaptureError, setLiveCaptureError] = useState('');
+  const videoRef = useRef(null);
+  const streamRef = useRef(null);
 
   useEffect(() => {
     return () => {
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach((t) => t.stop());
+        streamRef.current = null;
+      }
       imageEntries.forEach((item) => {
         try { URL.revokeObjectURL(item.previewUrl); } catch (_) { /* noop */ }
       });
@@ -110,9 +119,101 @@ export default function StaffManagement() {
       setPendingCapture(null);
       setCameraOptions([]);
       setSelectedCaptureCameraId('');
+      setLiveCaptureOpen(false);
+      setLiveCaptureError('');
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach((t) => t.stop());
+        streamRef.current = null;
+      }
     } catch (err) {
       setError(err?.response?.data?.error || 'Failed to create staff member');
     }
+  };
+
+  const stopLivePreview = () => {
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach((t) => t.stop());
+      streamRef.current = null;
+    }
+    setLiveCaptureBusy(false);
+  };
+
+  const startLivePreview = async () => {
+    setLiveCaptureError('');
+    setCaptureError('');
+    setError('');
+    setLiveCaptureBusy(true);
+    setLiveCaptureOpen(true);
+    try {
+      if (!navigator.mediaDevices?.getUserMedia) {
+        throw new Error('Live device camera preview is not supported in this browser.');
+      }
+      stopLivePreview();
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: {
+          width: { ideal: 640 },
+          height: { ideal: 480 },
+          facingMode: 'user',
+        },
+        audio: false,
+      });
+      streamRef.current = stream;
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+        await videoRef.current.play();
+      }
+    } catch (err) {
+      setLiveCaptureError(err?.message || 'Could not open live camera preview.');
+    } finally {
+      setLiveCaptureBusy(false);
+    }
+  };
+
+  const captureFromLivePreview = async () => {
+    setLiveCaptureError('');
+    if (!videoRef.current) {
+      setLiveCaptureError('Live preview is not available.');
+      return;
+    }
+    const video = videoRef.current;
+    const w = video.videoWidth || 640;
+    const h = video.videoHeight || 480;
+    if (!w || !h) {
+      setLiveCaptureError('Camera is still initializing. Try again in a second.');
+      return;
+    }
+    const canvas = document.createElement('canvas');
+    canvas.width = w;
+    canvas.height = h;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) {
+      setLiveCaptureError('Could not prepare frame capture.');
+      return;
+    }
+    ctx.drawImage(video, 0, 0, w, h);
+    const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', 0.92));
+    if (!blob) {
+      setLiveCaptureError('Failed to capture image from live preview.');
+      return;
+    }
+    const file = new File([blob], `staff_live_capture_${Date.now()}.jpg`, { type: 'image/jpeg' });
+    const previewUrl = URL.createObjectURL(file);
+    if (pendingCapture?.previewUrl) {
+      try { URL.revokeObjectURL(pendingCapture.previewUrl); } catch (_) { /* noop */ }
+    }
+    setPendingCapture({
+      file,
+      previewUrl,
+      cameraName: 'This Device Camera',
+    });
+    stopLivePreview();
+    setLiveCaptureOpen(false);
+  };
+
+  const closeLiveCapture = () => {
+    stopLivePreview();
+    setLiveCaptureOpen(false);
+    setLiveCaptureError('');
   };
 
   const handleCaptureFromCamera = async () => {
@@ -254,7 +355,14 @@ export default function StaffManagement() {
         </table>
       </Card>
 
-      <Modal isOpen={isModalOpen} onClose={() => setIsModalOpen(false)} title="Add New Staff">
+      <Modal
+        isOpen={isModalOpen}
+        onClose={() => {
+          closeLiveCapture();
+          setIsModalOpen(false);
+        }}
+        title="Add New Staff"
+      >
         <form onSubmit={handleSubmit} className="space-y-4">
           <input className="input" placeholder="Staff ID (optional, auto-generated if empty)"
             value={newStaff.staff_id} onChange={e => setNewStaff({...newStaff, staff_id: e.target.value})} />
@@ -292,13 +400,40 @@ export default function StaffManagement() {
               <button
                 type="button"
                 className="btn btn-secondary"
+                disabled={liveCaptureBusy}
+                onClick={startLivePreview}
+              >
+                {liveCaptureBusy ? 'Opening...' : 'Capture Photo'}
+              </button>
+              <button
+                type="button"
+                className="btn btn-secondary"
                 disabled={captureLoading || !selectedCaptureCameraId}
                 onClick={handleCaptureFromCamera}
               >
-                {captureLoading ? 'Capturing...' : 'Capture Photo'}
+                {captureLoading ? 'Capturing...' : 'Quick Capture (Configured Camera)'}
               </button>
             </div>
             {captureError && <div className="text-sm text-red-500">{captureError}</div>}
+            {liveCaptureOpen && (
+              <div className="rounded border border-cyan-500/50 p-2 bg-slate-900/30 space-y-2">
+                <div className="text-xs text-cyan-300">Live preview for staff photo capture</div>
+                <div className="w-[260px] max-w-full rounded overflow-hidden border border-slate-600 bg-black">
+                  <video
+                    ref={videoRef}
+                    className="w-full h-[180px] object-cover"
+                    autoPlay
+                    muted
+                    playsInline
+                  />
+                </div>
+                {liveCaptureError && <div className="text-xs text-red-500">{liveCaptureError}</div>}
+                <div className="flex gap-2">
+                  <button type="button" className="btn btn-primary" onClick={captureFromLivePreview}>Take Snapshot</button>
+                  <button type="button" className="btn btn-secondary" onClick={closeLiveCapture}>Close</button>
+                </div>
+              </div>
+            )}
             {pendingCapture && (
               <div className="rounded border border-cyan-500/50 p-2 bg-slate-900/30">
                 <div className="text-xs mb-2 text-cyan-300">
@@ -344,7 +479,16 @@ export default function StaffManagement() {
           </div>
 
           <div className="flex justify-end gap-2">
-            <button type="button" onClick={() => setIsModalOpen(false)} className="btn btn-secondary">Cancel</button>
+            <button
+              type="button"
+              onClick={() => {
+                closeLiveCapture();
+                setIsModalOpen(false);
+              }}
+              className="btn btn-secondary"
+            >
+              Cancel
+            </button>
             <button type="submit" className="btn btn-primary">Save</button>
           </div>
         </form>
