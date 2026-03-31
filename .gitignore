@@ -61,6 +61,7 @@ backend/reports/*
 !backend/reports/.gitkeep
 raspberry_pi/qr/*
 !raspberry_pi/qr/.gitkeep
+data/lfw/
 *.log
 
 *.pkg
