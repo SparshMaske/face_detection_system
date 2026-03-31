@@ -189,7 +189,17 @@ DATA_RETENTION_DAYS=90
 
 #### Download Face Recognition Models
 
-The InsightFace library will automatically download required models on first run. Ensure you have internet connection during first startup.
+Offline mode is enabled by default (`FACE_OFFLINE_ONLY=1`), so model files must exist locally before backend startup.
+
+Copy local cache into project model directory:
+
+```bash
+bash raspberry_pi/sync_local_face_models.sh buffalo_s
+```
+
+Expected path:
+
+`backend/models/insightface/models/buffalo_s`
 
 ### 3. Frontend Setup
 
@@ -396,6 +406,19 @@ sudo systemctl start visitor-monitor
 sudo systemctl status visitor-monitor
 ```
 
+### Raspberry Pi Offline Access Point + QR (recommended)
+
+```bash
+sudo bash raspberry_pi/setup_access_point.sh VisitorMonitor Visitor@12345 IN
+sudo bash raspberry_pi/setup_nginx_offline_site.sh /opt/visitor-monitor/frontend-stable/build
+sudo bash raspberry_pi/setup_backend_service.sh /opt/visitor-monitor pi
+bash raspberry_pi/generate_qr.sh http://192.168.4.1 VisitorMonitor Visitor@12345 raspberry_pi/qr
+```
+
+Detailed guide:
+
+`docs/LOCAL_AND_RPI_OFFLINE_DEPLOY.md`
+
 ### Database Backups
 
 ```bash
@@ -417,14 +440,12 @@ psql -U visitor_user visitor_monitoring < backup_20240101.sql
 
 #### 1. Face Recognition Models Not Loading
 
-**Problem:** InsightFace models fail to download
+**Problem:** InsightFace models are not found in offline mode
 
 **Solution:**
 ```bash
-# Manually download models
-cd ~/.insightface/models
-wget https://github.com/deepinsight/insightface/releases/download/v0.7/buffalo_l.zip
-unzip buffalo_l.zip
+# Copy cached model into project local model folder
+bash raspberry_pi/sync_local_face_models.sh buffalo_s
 ```
 
 #### 2. Database Connection Errors

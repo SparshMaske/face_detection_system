@@ -10,7 +10,7 @@ const resolveDefaultApiBaseUrl = () => {
     return 'http://127.0.0.1:5000/api';
   }
 
-  // For ngrok/public access, keep API same-origin to avoid CORS/mixed-content issues.
+  // For LAN/offline access, use same-origin proxy (/api).
   return `${window.location.origin}/api`;
 };
 

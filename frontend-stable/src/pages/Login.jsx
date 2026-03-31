@@ -21,7 +21,7 @@ export default function Login() {
         setError('Invalid username or password');
         return;
       }
-      setError('Unable to reach backend from this URL. Check ngrok tunnel/proxy and try again.');
+      setError('Unable to reach backend service. Check if backend is running and reachable from this device.');
     }
   };
 

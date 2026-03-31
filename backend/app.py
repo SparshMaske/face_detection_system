@@ -129,12 +129,25 @@ def create_app(config_class=Config):
     app.register_blueprint(settings_bp, url_prefix='/api/settings')
     app.register_blueprint(camera_bp, url_prefix='/api/camera')
     app.register_blueprint(events_bp, url_prefix='/api/events')
+
+    @app.route('/api/health', methods=['GET'])
+    def health():
+        return jsonify({'status': 'ok'}), 200
+
     try:
         from routes.settings import sync_runtime_settings_from_db
         with app.app_context():
             sync_runtime_settings_from_db()
     except Exception as exc:
         app.logger.warning("Could not apply persisted runtime settings on startup: %s", exc)
+
+    try:
+        from routes.camera import _ensure_background_worker
+        with app.app_context():
+            _ensure_background_worker()
+    except Exception as exc:
+        app.logger.warning("Could not start camera background worker on startup: %s", exc)
+
     ensure_default_admin(app)
 
     # --- JWT Configuration ---

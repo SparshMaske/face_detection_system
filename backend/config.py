@@ -4,6 +4,14 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+
+def _split_csv_env(raw_value, fallback):
+    text = (raw_value or '').strip()
+    if not text:
+        return list(fallback)
+    return [item.strip() for item in text.split(',') if item.strip()]
+
+
 class Config:
     # Base Security
     SECRET_KEY = os.getenv('SECRET_KEY', 'dev-secret-key')
@@ -41,6 +49,8 @@ class Config:
     # Realtime performance tuning
     FACE_MODEL_NAME = os.getenv('FACE_MODEL_NAME', 'buffalo_s')
     FACE_DET_SIZE = int(os.getenv('FACE_DET_SIZE', 320))
+    FACE_MODEL_ROOT = os.getenv('FACE_MODEL_ROOT', os.path.join(BASE_DIR, 'models', 'insightface'))
+    FACE_OFFLINE_ONLY = os.getenv('FACE_OFFLINE_ONLY', '1').strip().lower() in ('1', 'true', 'yes', 'on')
     RECOGNITION_INTERVAL_FRAMES = int(os.getenv('RECOGNITION_INTERVAL_FRAMES', 5))
     DB_COMMIT_INTERVAL_MS = int(os.getenv('DB_COMMIT_INTERVAL_MS', 1200))
     MAX_EVENT_MATCH_CANDIDATES = int(os.getenv('MAX_EVENT_MATCH_CANDIDATES', 256))
@@ -50,4 +60,14 @@ class Config:
     PERF_CAPTURE_HEIGHT = int(os.getenv('PERF_CAPTURE_HEIGHT', 384))
     
     # CORS
-    CORS_ORIGINS = ["http://localhost:3000", "http://127.0.0.1:3000"]
+    CORS_ORIGINS = _split_csv_env(
+        os.getenv('CORS_ORIGINS'),
+        [
+            "http://localhost:3000",
+            "http://127.0.0.1:3000",
+            "http://localhost",
+            "http://127.0.0.1",
+            "http://192.168.4.1",
+            "http://visitorpi.local",
+        ],
+    )

@@ -27,12 +27,51 @@ class FaceRecognitionService:
         print("Initializing InsightFace model...")
         model_name = os.getenv('FACE_MODEL_NAME', 'buffalo_s')
         det_size = int(os.getenv('FACE_DET_SIZE', 320) or 320)
+        base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+        configured_model_root = os.getenv(
+            'FACE_MODEL_ROOT',
+            os.path.join(base_dir, 'models', 'insightface'),
+        )
+        offline_only = os.getenv('FACE_OFFLINE_ONLY', '1').strip().lower() in ('1', 'true', 'yes', 'on')
         if has_app_context():
             model_name = str(current_app.config.get('FACE_MODEL_NAME', model_name) or model_name)
             det_size = int(current_app.config.get('FACE_DET_SIZE', det_size) or det_size)
+            configured_model_root = str(
+                current_app.config.get('FACE_MODEL_ROOT', configured_model_root) or configured_model_root
+            )
+            offline_only = bool(current_app.config.get('FACE_OFFLINE_ONLY', offline_only))
         det_size = max(224, min(640, det_size))
+
+        candidate_roots = []
+        for root in (configured_model_root, os.path.expanduser('~/.insightface')):
+            token = os.path.abspath(os.path.expanduser(str(root)))
+            if token not in candidate_roots:
+                candidate_roots.append(token)
+
+        selected_root = None
+        for root in candidate_roots:
+            model_dir_a = os.path.join(root, 'models', model_name)
+            model_dir_b = os.path.join(root, model_name)
+            if os.path.isdir(model_dir_a) or os.path.isdir(model_dir_b):
+                selected_root = root
+                break
+        if selected_root is None:
+            selected_root = candidate_roots[0]
+
+        os.makedirs(selected_root, exist_ok=True)
+        if offline_only:
+            model_dir_a = os.path.join(selected_root, 'models', model_name)
+            model_dir_b = os.path.join(selected_root, model_name)
+            if not os.path.isdir(model_dir_a) and not os.path.isdir(model_dir_b):
+                raise RuntimeError(
+                    f"Offline model not found for '{model_name}'. "
+                    f"Expected under '{selected_root}'. "
+                    "Place InsightFace model files locally before startup."
+                )
+
         self.app = FaceAnalysis(
             name=model_name,
+            root=selected_root,
             providers=['CPUExecutionProvider'],
             allowed_modules=['detection', 'recognition'],
         )

@@ -106,17 +106,18 @@ See [docs/API.md](docs/API.md) for complete API documentation.
 docker compose up --build -d
 ```
 
-## Streamlit Shareable Deployment
+## Raspberry Pi Offline Access Point Deployment
 
-Use this if you want a Streamlit share link while keeping the same React UI/UX:
+Use this mode for fully offline operation with Raspberry Pi hosting:
+- frontend
+- backend
+- database
+- its own Wi-Fi AP
 
-1. Build frontend in this repo (`frontend-stable/build`).
-2. Deploy backend publicly.
-3. Deploy this repo on Streamlit with app file `streamlit_app.py`.
-4. Optional: set `BACKEND_API_URL` in Streamlit Secrets if backend is not on `/api`.
+You can boot the Pi, scan Wi-Fi + App QR from phone, and use the system without internet.
 
 Detailed steps:
-- `docs/LOCAL_AND_STREAMLIT_DEPLOY.md`
+- `docs/LOCAL_AND_RPI_OFFLINE_DEPLOY.md`
 
 ## Project Structure
 

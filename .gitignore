@@ -59,6 +59,8 @@ backend/static/uploads/*
 !backend/static/uploads/.gitkeep
 backend/reports/*
 !backend/reports/.gitkeep
+raspberry_pi/qr/*
+!raspberry_pi/qr/.gitkeep
 *.log
 
 *.pkg

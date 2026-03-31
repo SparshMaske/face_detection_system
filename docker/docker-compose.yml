@@ -25,7 +25,7 @@ services:
       DATABASE_URL: postgresql://visitor_user:visitor_pass@db:5432/visitor_monitoring
       SECRET_KEY: change_this_secret_key
       JWT_SECRET_KEY: change_this_jwt_secret
-      CORS_ORIGINS: http://localhost:3000,http://127.0.0.1:3000
+      CORS_ORIGINS: http://localhost:3000,http://127.0.0.1:3000,http://localhost,http://127.0.0.1,http://192.168.4.1,http://visitorpi.local
     depends_on:
       db:
         condition: service_healthy

@@ -6,8 +6,6 @@ const api = axios.create({
   baseURL: API_BASE_URL,
   headers: {
     'Content-Type': 'application/json',
-    // Avoid ngrok browser-warning interception on XHR/fetch API calls.
-    'ngrok-skip-browser-warning': 'true',
   },
 });
 

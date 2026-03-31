@@ -642,7 +642,7 @@ export default function LiveView() {
       )}
       {backendUnavailable && (
         <div className="text-sm text-red-600">
-          Backend appears unreachable right now. Confirm backend is running at `http://127.0.0.1:5000`.
+          Backend appears unreachable right now. Confirm backend service is running and reachable from this device.
         </div>
       )}
 

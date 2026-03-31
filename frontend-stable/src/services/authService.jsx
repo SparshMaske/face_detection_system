@@ -6,7 +6,6 @@ const TOKEN_KEY = 'token';
 const REFRESH_TOKEN_KEY = 'refresh_token';
 const USER_KEY = 'user';
 const memoryStore = new Map();
-const NGROK_HEADER = { 'ngrok-skip-browser-warning': 'true' };
 
 const storageGet = (key) => {
   try {
@@ -14,7 +13,7 @@ const storageGet = (key) => {
       return window.localStorage.getItem(key);
     }
   } catch (_) {
-    // Streamlit embedded frames may block localStorage.
+    // Some embedded browsers may block localStorage.
   }
   return memoryStore.has(key) ? memoryStore.get(key) : null;
 };
@@ -66,9 +65,6 @@ const login = async (username, password) => {
     {
       username,
       password,
-    },
-    {
-      headers: NGROK_HEADER,
     }
   );
 
@@ -92,7 +88,7 @@ const getUser = async () => {
 
   try {
     const response = await axios.get(`${API_URL}/me`, {
-      headers: { ...NGROK_HEADER, Authorization: `Bearer ${token}` }
+      headers: { Authorization: `Bearer ${token}` }
     });
     storageSet(USER_KEY, JSON.stringify(response.data));
     return response.data;
@@ -105,7 +101,7 @@ const getUser = async () => {
           return null;
         }
         const response = await axios.get(`${API_URL}/me`, {
-          headers: { ...NGROK_HEADER, Authorization: `Bearer ${refreshed}` }
+          headers: { Authorization: `Bearer ${refreshed}` }
         });
         storageSet(USER_KEY, JSON.stringify(response.data));
         return response.data;
@@ -127,7 +123,7 @@ const refreshAccessToken = async () => {
     const response = await axios.post(
       `${API_URL}/refresh`,
       {},
-      { headers: { ...NGROK_HEADER, Authorization: `Bearer ${refreshToken}` } }
+      { headers: { Authorization: `Bearer ${refreshToken}` } }
     );
     const newToken = response?.data?.access_token;
     if (newToken) {
