@@ -565,7 +565,73 @@ class ReportGenerator:
         elements.append(Paragraph(title_text, styles['Title']))
         elements.append(Paragraph(subtitle_text, styles['Normal']))
         elements.append(Spacer(1, 10))
+        elements.append(Paragraph("Visitor Summary", styles['Heading2']))
+        elements.append(Spacer(1, 6))
 
+        def _card_for_visitor(item):
+            body = []
+            body.append(Paragraph(f"<b>{item['visitor_id']}</b>", card_text_style))
+            body.append(Spacer(1, 2))
+
+            image_path = item.get('snapshot_path')
+            if image_path and os.path.exists(image_path):
+                body.append(Image(image_path, width=62, height=78))
+            else:
+                body.append(Paragraph("Snapshot unavailable", styles['Italic']))
+            body.append(Spacer(1, 4))
+            body.append(Paragraph(f"In: {item['first_in']}", card_text_style))
+            body.append(Paragraph(f"Out: {item['last_out']}", card_text_style))
+            body.append(Paragraph(f"Duration: {item['duration']}", card_text_style))
+
+            card = Table([[body]], colWidths=[133])
+            card.setStyle(TableStyle([
+                ('BOX', (0, 0), (-1, -1), 0.7, colors.HexColor('#6b7280')),
+                ('BACKGROUND', (0, 0), (-1, -1), colors.HexColor('#f8fafc')),
+                ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+                ('LEFTPADDING', (0, 0), (-1, -1), 6),
+                ('RIGHTPADDING', (0, 0), (-1, -1), 6),
+                ('TOPPADDING', (0, 0), (-1, -1), 6),
+                ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
+            ]))
+            return card
+
+        if not visitors_payload:
+            elements.append(Paragraph("No visitors found in selected window.", styles['Normal']))
+        else:
+            page_size = 16
+            for start in range(0, len(visitors_payload), page_size):
+                if start > 0:
+                    elements.append(PageBreak())
+                    elements.append(Paragraph(title_text, styles['Title']))
+                    elements.append(Paragraph(subtitle_text, styles['Normal']))
+                    elements.append(Spacer(1, 10))
+                    elements.append(Paragraph("Visitor Summary", styles['Heading2']))
+                    elements.append(Spacer(1, 6))
+
+                chunk = visitors_payload[start:start + page_size]
+                row_data = []
+                current_row = []
+                for item in chunk:
+                    current_row.append(_card_for_visitor(item))
+                    if len(current_row) == 4:
+                        row_data.append(current_row)
+                        current_row = []
+                if current_row:
+                    while len(current_row) < 4:
+                        current_row.append('')
+                    row_data.append(current_row)
+
+                grid = Table(row_data, colWidths=[136, 136, 136, 136], hAlign='LEFT')
+                grid.setStyle(TableStyle([
+                    ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+                    ('LEFTPADDING', (0, 0), (-1, -1), 0),
+                    ('RIGHTPADDING', (0, 0), (-1, -1), 4),
+                    ('TOPPADDING', (0, 0), (-1, -1), 0),
+                    ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+                ]))
+                elements.append(grid)
+
+        elements.append(PageBreak())
         elements.append(Paragraph("Management", styles['Heading2']))
         if management_payload:
             mgmt_rows = [['Staff ID', 'Name', 'Department', 'Position', 'Status', 'Added']]
@@ -593,77 +659,6 @@ class ReportGenerator:
         else:
             elements.append(Paragraph("No staff data available for this event window.", styles['Normal']))
 
-        elements.append(Spacer(1, 10))
-        elements.append(Paragraph("Visitor Summary", styles['Heading2']))
-        elements.append(Spacer(1, 6))
-
-        if not visitors_payload:
-            elements.append(Paragraph("No visitors found in selected window.", styles['Normal']))
-            doc.build(elements)
-            return
-
-        elements.append(PageBreak())
-
-        def _card_for_visitor(item):
-            body = []
-            body.append(Paragraph(f"<b>{item['visitor_id']}</b>", card_text_style))
-            body.append(Spacer(1, 2))
-            body.append(Paragraph(f"Date: {item['date']}", card_text_style))
-            body.append(Paragraph(f"In: {item['first_in']}", card_text_style))
-            body.append(Paragraph(f"Out: {item['last_out']}", card_text_style))
-            body.append(Paragraph(f"Dur: {item['duration']}", card_text_style))
-            body.append(Spacer(1, 3))
-
-            image_path = item.get('snapshot_path')
-            if image_path and os.path.exists(image_path):
-                body.append(Image(image_path, width=62, height=78))
-            else:
-                body.append(Paragraph("Snapshot unavailable", styles['Italic']))
-
-            card = Table([[body]], colWidths=[133])
-            card.setStyle(TableStyle([
-                ('BOX', (0, 0), (-1, -1), 0.7, colors.HexColor('#6b7280')),
-                ('BACKGROUND', (0, 0), (-1, -1), colors.HexColor('#f8fafc')),
-                ('VALIGN', (0, 0), (-1, -1), 'TOP'),
-                ('LEFTPADDING', (0, 0), (-1, -1), 6),
-                ('RIGHTPADDING', (0, 0), (-1, -1), 6),
-                ('TOPPADDING', (0, 0), (-1, -1), 6),
-                ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
-            ]))
-            return card
-
-        page_size = 16
-        for start in range(0, len(visitors_payload), page_size):
-            if start > 0:
-                elements.append(PageBreak())
-
-            elements.append(Paragraph(f"{title_text} - Visitors", styles['Title']))
-            elements.append(Paragraph(subtitle_text, styles['Normal']))
-            elements.append(Spacer(1, 8))
-
-            chunk = visitors_payload[start:start + page_size]
-            row_data = []
-            current_row = []
-            for item in chunk:
-                current_row.append(_card_for_visitor(item))
-                if len(current_row) == 4:
-                    row_data.append(current_row)
-                    current_row = []
-            if current_row:
-                while len(current_row) < 4:
-                    current_row.append('')
-                row_data.append(current_row)
-
-            grid = Table(row_data, colWidths=[136, 136, 136, 136], hAlign='LEFT')
-            grid.setStyle(TableStyle([
-                ('VALIGN', (0, 0), (-1, -1), 'TOP'),
-                ('LEFTPADDING', (0, 0), (-1, -1), 0),
-                ('RIGHTPADDING', (0, 0), (-1, -1), 4),
-                ('TOPPADDING', (0, 0), (-1, -1), 0),
-                ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
-            ]))
-            elements.append(grid)
-
         doc.build(elements)
 
     def _build_event_visitors_with_fpdf(self, filepath, title_text, subtitle_text, visitors_payload, management_payload):
@@ -677,6 +672,70 @@ class ReportGenerator:
         pdf.multi_cell(0, 6, self._safe_text(subtitle_text))
         pdf.ln(2)
 
+        pdf.set_font('Arial', 'B', 12)
+        pdf.cell(0, 7, 'Visitor Summary', ln=1)
+        pdf.set_font('Arial', '', 8)
+        pdf.multi_cell(0, 4, self._safe_text(subtitle_text))
+        pdf.ln(1)
+
+        if not visitors_payload:
+            pdf.set_font('Arial', '', 10)
+            pdf.cell(0, 8, 'No visitors found in selected window.', ln=1)
+        else:
+            for idx, visitor_item in enumerate(visitors_payload):
+                slot = idx % 16
+                if slot == 0 and idx > 0:
+                    pdf.add_page()
+                    pdf.set_font('Arial', 'B', 12)
+                    pdf.cell(0, 7, 'Visitor Summary', ln=1)
+                    pdf.set_font('Arial', '', 8)
+                    pdf.multi_cell(0, 4, self._safe_text(subtitle_text))
+                    pdf.ln(1)
+
+                row = slot // 4
+                col = slot % 4
+                card_x = 8 + (col * 49)
+                card_y = 23 + (row * 68)
+                card_w = 45
+                card_h = 64
+
+                pdf.set_draw_color(108, 117, 125)
+                pdf.rect(card_x, card_y, card_w, card_h)
+
+                pdf.set_xy(card_x + 2, card_y + 2)
+                pdf.set_font('Arial', 'B', 8)
+                pdf.cell(card_w - 4, 4, self._safe_text(visitor_item['visitor_id']), ln=1)
+
+                image_path = visitor_item.get('snapshot_path')
+                if image_path and os.path.exists(image_path):
+                    try:
+                        image_w = 24
+                        image_h = 28
+                        image_x = card_x + (card_w - image_w) / 2
+                        image_y = card_y + 8
+                        pdf.image(image_path, x=image_x, y=image_y, w=image_w, h=image_h)
+                    except Exception:
+                        pdf.set_xy(card_x + 2, card_y + 18)
+                        pdf.set_font('Arial', 'I', 6)
+                        pdf.cell(card_w - 4, 3, 'No snap', ln=1)
+                else:
+                    pdf.set_xy(card_x + 2, card_y + 18)
+                    pdf.set_font('Arial', 'I', 6)
+                    pdf.cell(card_w - 4, 3, 'No snap', ln=1)
+
+                details = [
+                    f"In: {visitor_item['first_in']}",
+                    f"Out: {visitor_item['last_out']}",
+                    f"Duration: {visitor_item['duration']}",
+                ]
+                pdf.set_font('Arial', '', 6)
+                text_y = card_y + 38
+                for line in details:
+                    pdf.set_xy(card_x + 2, text_y)
+                    pdf.multi_cell(card_w - 4, 3.1, self._safe_text(line))
+                    text_y = pdf.get_y()
+
+        pdf.add_page()
         pdf.set_font('Arial', 'B', 12)
         pdf.cell(0, 7, 'Management', ln=1)
         pdf.set_font('Arial', 'B', 8)
@@ -707,79 +766,6 @@ class ReportGenerator:
                     pdf.set_font('Arial', '', 8)
         else:
             pdf.cell(0, 6, 'No staff data available for this event window.', ln=1)
-
-        if not visitors_payload:
-            pdf.ln(4)
-            pdf.set_font('Arial', 'B', 11)
-            pdf.cell(0, 8, 'Visitor Summary', ln=1)
-            pdf.set_font('Arial', '', 11)
-            pdf.cell(0, 8, 'No visitors found in selected window.', ln=1)
-            pdf.output(filepath)
-            return
-
-        pdf.add_page()
-        pdf.set_font('Arial', 'B', 12)
-        pdf.cell(0, 7, self._safe_text(f"{title_text} - Visitors"), ln=1)
-        pdf.set_font('Arial', '', 8)
-        pdf.multi_cell(0, 4, self._safe_text(subtitle_text))
-        pdf.ln(1)
-
-        page_index = -1
-        for idx, visitor_item in enumerate(visitors_payload):
-            slot = idx % 16
-            if slot == 0:
-                page_index += 1
-                if idx > 0:
-                    pdf.add_page()
-                    pdf.set_font('Arial', 'B', 12)
-                    pdf.cell(0, 7, self._safe_text(f"{title_text} - Visitors"), ln=1)
-                    pdf.set_font('Arial', '', 8)
-                    pdf.multi_cell(0, 4, self._safe_text(subtitle_text))
-                    pdf.ln(1)
-
-            row = slot // 4
-            col = slot % 4
-            card_x = 8 + (col * 49)
-            card_y = 23 + (row * 68)
-            card_w = 45
-            card_h = 64
-
-            pdf.set_draw_color(108, 117, 125)
-            pdf.rect(card_x, card_y, card_w, card_h)
-
-            pdf.set_xy(card_x + 2, card_y + 2)
-            pdf.set_font('Arial', 'B', 8)
-            pdf.cell(card_w - 4, 4, self._safe_text(visitor_item['visitor_id']), ln=1)
-
-            details = [
-                f"D:{visitor_item['date']}",
-                f"I:{visitor_item['first_in']}",
-                f"O:{visitor_item['last_out']}",
-                f"T:{visitor_item['duration']}",
-            ]
-            pdf.set_font('Arial', '', 6)
-            text_y = card_y + 7
-            for line in details:
-                pdf.set_xy(card_x + 2, text_y)
-                pdf.multi_cell(card_w - 4, 3.1, self._safe_text(line))
-                text_y = pdf.get_y()
-
-            image_path = visitor_item.get('snapshot_path')
-            if image_path and os.path.exists(image_path):
-                try:
-                    image_w = 26
-                    image_h = 30
-                    image_x = card_x + (card_w - image_w) / 2
-                    image_y = card_y + card_h - image_h - 2
-                    pdf.image(image_path, x=image_x, y=image_y, w=image_w, h=image_h)
-                except Exception:
-                    pdf.set_xy(card_x + 2, card_y + card_h - 5)
-                    pdf.set_font('Arial', 'I', 5)
-                    pdf.cell(card_w - 4, 3, 'No snap', ln=1)
-            else:
-                pdf.set_xy(card_x + 2, card_y + card_h - 5)
-                pdf.set_font('Arial', 'I', 5)
-                pdf.cell(card_w - 4, 3, 'No snap', ln=1)
 
         pdf.output(filepath)
 

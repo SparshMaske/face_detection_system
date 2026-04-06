@@ -12,6 +12,8 @@ import { AuthProvider, useAuth } from './context/AuthContext';
 import { ThemeProvider } from './context/ThemeContext';
 import Navbar from './components/Navbar';
 import Sidebar from './components/Sidebar';
+import Modal from './components/Modal';
+import { getCurrentEvent } from './services/eventService';
 
 // Pages
 import Login from './pages/Login';
@@ -70,11 +72,64 @@ function App() {
 // Main Layout with Navbar and Sidebar
 function Layout() {
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  const [eventEndPopup, setEventEndPopup] = useState({
+    open: false,
+    eventName: '',
+    eventId: '',
+  });
   const location = useLocation();
 
   useEffect(() => {
     setMobileNavOpen(false);
   }, [location.pathname]);
+
+  useEffect(() => {
+    let mounted = true;
+    let initialized = false;
+    let previousState = null;
+
+    const pollEventState = async () => {
+      try {
+        const response = await getCurrentEvent();
+        const currentState = response?.data || {};
+
+        if (!mounted) return;
+
+        if (!initialized) {
+          previousState = currentState;
+          initialized = true;
+          return;
+        }
+
+        const prev = previousState || {};
+        const prevActive = prev.status === 'active' && Boolean(prev.event_id);
+        const sameActiveEvent =
+          currentState.status === 'active' &&
+          currentState.event_id === prev.event_id;
+        const eventEnded = prevActive && !sameActiveEvent;
+
+        if (eventEnded) {
+          setEventEndPopup({
+            open: true,
+            eventName: prev.event_name || 'Scheduled event',
+            eventId: prev.event_id || '',
+          });
+        }
+
+        previousState = currentState;
+      } catch (error) {
+        // Ignore transient polling errors; do not interrupt page workflows.
+      }
+    };
+
+    pollEventState();
+    const intervalId = window.setInterval(pollEventState, 5000);
+
+    return () => {
+      mounted = false;
+      window.clearInterval(intervalId);
+    };
+  }, []);
 
   return (
     <div className="app-shell flex h-screen bg-gray-50">
@@ -89,6 +144,20 @@ function Layout() {
           <Outlet />
         </main>
       </div>
+      <Modal
+        isOpen={eventEndPopup.open}
+        onClose={() => setEventEndPopup((prev) => ({ ...prev, open: false }))}
+        title="Event Completed"
+      >
+        <p style={{ marginBottom: '0.75rem', lineHeight: 1.6 }}>
+          <strong>{eventEndPopup.eventName}</strong> has ended.
+        </p>
+        {eventEndPopup.eventId ? (
+          <p style={{ color: '#475569', fontSize: '0.95rem' }}>
+            Event ID: {eventEndPopup.eventId}
+          </p>
+        ) : null}
+      </Modal>
     </div>
   );
 }
