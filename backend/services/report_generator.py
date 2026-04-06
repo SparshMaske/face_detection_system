@@ -668,9 +668,6 @@ class ReportGenerator:
         pdf.add_page()
         pdf.set_font('Arial', 'B', 16)
         pdf.cell(0, 10, self._safe_text(title_text), ln=1)
-        pdf.set_font('Arial', '', 10)
-        pdf.multi_cell(0, 6, self._safe_text(subtitle_text))
-        pdf.ln(2)
 
         pdf.set_font('Arial', 'B', 12)
         pdf.cell(0, 7, 'Visitor Summary', ln=1)
@@ -678,10 +675,29 @@ class ReportGenerator:
         pdf.multi_cell(0, 4, self._safe_text(subtitle_text))
         pdf.ln(1)
 
+        def _compact_datetime(value):
+            text = str(value or '').strip()
+            if not text or text == '-':
+                return '-'
+            for fmt in ('%Y-%m-%d %H:%M:%S', '%Y-%m-%dT%H:%M:%S'):
+                try:
+                    dt = datetime.strptime(text[:19], fmt)
+                    return dt.strftime('%Y-%m-%d %H:%M')
+                except Exception:
+                    continue
+            return text[:16]
+
         if not visitors_payload:
             pdf.set_font('Arial', '', 10)
             pdf.cell(0, 8, 'No visitors found in selected window.', ln=1)
         else:
+            card_w = 45
+            card_h = 58
+            card_gap_x = 4
+            card_gap_y = 3
+            left_margin = 8
+            top_offset = max(24, int(pdf.get_y()) + 2)
+
             for idx, visitor_item in enumerate(visitors_payload):
                 slot = idx % 16
                 if slot == 0 and idx > 0:
@@ -691,13 +707,12 @@ class ReportGenerator:
                     pdf.set_font('Arial', '', 8)
                     pdf.multi_cell(0, 4, self._safe_text(subtitle_text))
                     pdf.ln(1)
+                    top_offset = max(24, int(pdf.get_y()) + 2)
 
                 row = slot // 4
                 col = slot % 4
-                card_x = 8 + (col * 49)
-                card_y = 23 + (row * 68)
-                card_w = 45
-                card_h = 64
+                card_x = left_margin + (col * (card_w + card_gap_x))
+                card_y = top_offset + (row * (card_h + card_gap_y))
 
                 pdf.set_draw_color(108, 117, 125)
                 pdf.rect(card_x, card_y, card_w, card_h)
@@ -710,7 +725,7 @@ class ReportGenerator:
                 if image_path and os.path.exists(image_path):
                     try:
                         image_w = 24
-                        image_h = 28
+                        image_h = 26
                         image_x = card_x + (card_w - image_w) / 2
                         image_y = card_y + 8
                         pdf.image(image_path, x=image_x, y=image_y, w=image_w, h=image_h)
@@ -724,15 +739,15 @@ class ReportGenerator:
                     pdf.cell(card_w - 4, 3, 'No snap', ln=1)
 
                 details = [
-                    f"In: {visitor_item['first_in']}",
-                    f"Out: {visitor_item['last_out']}",
+                    f"In: {_compact_datetime(visitor_item.get('first_in'))}",
+                    f"Out: {_compact_datetime(visitor_item.get('last_out'))}",
                     f"Duration: {visitor_item['duration']}",
                 ]
-                pdf.set_font('Arial', '', 6)
-                text_y = card_y + 38
+                pdf.set_font('Arial', '', 5.8)
+                text_y = card_y + 35
                 for line in details:
                     pdf.set_xy(card_x + 2, text_y)
-                    pdf.multi_cell(card_w - 4, 3.1, self._safe_text(line))
+                    pdf.multi_cell(card_w - 4, 3.0, self._safe_text(line))
                     text_y = pdf.get_y()
 
         pdf.add_page()
