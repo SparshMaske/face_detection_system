@@ -987,30 +987,41 @@ class ReportGenerator:
         sheet = workbook.active
         sheet.title = 'Event Report'
         sheet.sheet_view.showGridLines = False
+        sheet.page_setup.orientation = 'landscape'
+        sheet.page_setup.fitToWidth = 1
+        sheet.page_setup.fitToHeight = False
+        sheet.print_options.horizontalCentered = True
 
         for col_idx in range(1, 17):
-            sheet.column_dimensions[get_column_letter(col_idx)].width = 15
+            sheet.column_dimensions[get_column_letter(col_idx)].width = 13.8
 
-        header_fill = PatternFill(start_color='0F172A', end_color='0F172A', fill_type='solid')
-        section_fill = PatternFill(start_color='1E293B', end_color='1E293B', fill_type='solid')
+        title_fill = PatternFill(start_color='0F172A', end_color='0F172A', fill_type='solid')
+        subtitle_fill = PatternFill(start_color='1E293B', end_color='1E293B', fill_type='solid')
+        section_fill = PatternFill(start_color='1F3558', end_color='1F3558', fill_type='solid')
         card_fill = PatternFill(start_color='F8FAFC', end_color='F8FAFC', fill_type='solid')
-        table_header_fill = PatternFill(start_color='E2E8F0', end_color='E2E8F0', fill_type='solid')
+        card_header_fill = PatternFill(start_color='334155', end_color='334155', fill_type='solid')
+        table_header_fill = PatternFill(start_color='1E293B', end_color='1E293B', fill_type='solid')
+        zebra_fill = PatternFill(start_color='F1F5F9', end_color='F1F5F9', fill_type='solid')
+        status_active_fill = PatternFill(start_color='DCFCE7', end_color='DCFCE7', fill_type='solid')
+        status_inactive_fill = PatternFill(start_color='FEE2E2', end_color='FEE2E2', fill_type='solid')
         thin = Side(border_style='thin', color='CBD5E1')
+        medium = Side(border_style='medium', color='94A3B8')
         card_border = Border(left=thin, right=thin, top=thin, bottom=thin)
+        card_outer_border = Border(left=medium, right=medium, top=medium, bottom=medium)
 
         sheet.merge_cells('A1:P1')
         sheet['A1'] = title_text
-        sheet['A1'].font = Font(name='Calibri', size=18, bold=True, color='FFFFFF')
+        sheet['A1'].font = Font(name='Calibri', size=20, bold=True, color='FFFFFF')
         sheet['A1'].alignment = Alignment(horizontal='center', vertical='center')
-        sheet['A1'].fill = header_fill
-        sheet.row_dimensions[1].height = 30
+        sheet['A1'].fill = title_fill
+        sheet.row_dimensions[1].height = 34
 
         sheet.merge_cells('A2:P2')
         sheet['A2'] = subtitle_text
-        sheet['A2'].font = Font(name='Calibri', size=11, bold=False, color='FFFFFF')
+        sheet['A2'].font = Font(name='Calibri', size=11, bold=False, color='E2E8F0')
         sheet['A2'].alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
-        sheet['A2'].fill = header_fill
-        sheet.row_dimensions[2].height = 36
+        sheet['A2'].fill = subtitle_fill
+        sheet.row_dimensions[2].height = 30
 
         sheet.merge_cells('A4:P4')
         sheet['A4'] = 'Visitor Summary'
@@ -1020,13 +1031,14 @@ class ReportGenerator:
         sheet.row_dimensions[4].height = 24
 
         base_row = 6
-        card_rows = 16
+        card_rows = 17
         cards_per_row = 4
 
         if not visitors_payload:
             sheet.merge_cells(f'A{base_row}:P{base_row}')
             sheet[f'A{base_row}'] = 'No visitors found in selected window.'
             sheet[f'A{base_row}'].font = Font(name='Calibri', size=11, italic=True, color='334155')
+            sheet[f'A{base_row}'].alignment = Alignment(horizontal='center', vertical='center')
         else:
             for idx, visitor_item in enumerate(visitors_payload):
                 row_group = idx // cards_per_row
@@ -1037,45 +1049,62 @@ class ReportGenerator:
                 end_row = start_row + card_rows - 1
 
                 for row_idx in range(start_row, end_row + 1):
-                    if start_row + 2 <= row_idx <= start_row + 8:
+                    if start_row + 3 <= row_idx <= start_row + 9:
                         sheet.row_dimensions[row_idx].height = 18
                     else:
-                        sheet.row_dimensions[row_idx].height = max(sheet.row_dimensions[row_idx].height or 0, 16)
+                        sheet.row_dimensions[row_idx].height = max(sheet.row_dimensions[row_idx].height or 0, 17)
                     for col_idx in range(start_col, end_col + 1):
                         cell = sheet.cell(row=row_idx, column=col_idx)
                         cell.border = card_border
                         cell.fill = card_fill
+
+                for row_idx in (start_row, end_row):
+                    for col_idx in range(start_col, end_col + 1):
+                        cell = sheet.cell(row=row_idx, column=col_idx)
+                        cell.border = card_outer_border
+                for row_idx in range(start_row, end_row + 1):
+                    sheet.cell(row=row_idx, column=start_col).border = card_outer_border
+                    sheet.cell(row=row_idx, column=end_col).border = card_outer_border
 
                 sheet.merge_cells(
                     f'{get_column_letter(start_col)}{start_row}:{get_column_letter(end_col)}{start_row}'
                 )
                 header_cell = sheet.cell(row=start_row, column=start_col)
                 header_cell.value = visitor_item.get('visitor_id', 'ID')
-                header_cell.font = Font(name='Calibri', size=11, bold=True, color='0F172A')
+                header_cell.font = Font(name='Calibri', size=11, bold=True, color='FFFFFF')
                 header_cell.alignment = Alignment(horizontal='center', vertical='center')
+                header_cell.fill = card_header_fill
+
+                sheet.merge_cells(
+                    f'{get_column_letter(start_col)}{start_row + 1}:{get_column_letter(end_col)}{start_row + 1}'
+                )
+                date_cell = sheet.cell(row=start_row + 1, column=start_col)
+                date_cell.value = f"Date: {visitor_item.get('date', '-')}"
+                date_cell.font = Font(name='Calibri', size=8, bold=False, color='475569')
+                date_cell.alignment = Alignment(horizontal='center', vertical='center')
 
                 snapshot_path = visitor_item.get('snapshot_path')
                 if snapshot_path and os.path.exists(snapshot_path):
                     try:
                         img = XLImage(snapshot_path)
-                        img.width = 126
-                        img.height = 132
+                        img.width = 118
+                        img.height = 124
                         anchor_col = min(16, start_col + 1)
-                        img.anchor = f'{get_column_letter(anchor_col)}{start_row + 2}'
+                        img.anchor = f'{get_column_letter(anchor_col)}{start_row + 3}'
                         sheet.add_image(img)
                     except Exception:
                         sheet.merge_cells(
-                            f'{get_column_letter(start_col)}{start_row + 5}:{get_column_letter(end_col)}{start_row + 5}'
+                            f'{get_column_letter(start_col)}{start_row + 6}:{get_column_letter(end_col)}{start_row + 6}'
                         )
-                        miss_cell = sheet.cell(row=start_row + 5, column=start_col)
+                        miss_cell = sheet.cell(row=start_row + 6, column=start_col)
                         miss_cell.value = 'Snapshot unavailable'
                         miss_cell.font = Font(name='Calibri', size=9, italic=True, color='64748B')
                         miss_cell.alignment = Alignment(horizontal='center', vertical='center')
                 else:
                     sheet.merge_cells(
-                        f'{get_column_letter(start_col)}{start_row + 5}:{get_column_letter(end_col)}{start_row + 5}'
+                        f'{get_column_letter(start_col)}{start_row + 6}:{get_column_letter(end_col)}{start_row + 6}'
                     )
-                    miss_cell = sheet.cell(row=start_row + 5, column=start_col)
+                    miss_cell = sheet.cell(row=start_row + 6, column=start_col)
                     miss_cell.value = 'Snapshot unavailable'
                     miss_cell.font = Font(name='Calibri', size=9, italic=True, color='64748B')
                     miss_cell.alignment = Alignment(horizontal='center', vertical='center')
@@ -1086,17 +1115,17 @@ class ReportGenerator:
                     f"Duration: {visitor_item.get('duration', '-')}",
                 ]
                 for offset, text in enumerate(details):
-                    detail_row = start_row + 11 + offset
+                    detail_row = start_row + 12 + offset
                     sheet.merge_cells(
                         f'{get_column_letter(start_col)}{detail_row}:{get_column_letter(end_col)}{detail_row}'
                     )
                     detail_cell = sheet.cell(row=detail_row, column=start_col)
                     detail_cell.value = text
-                    detail_cell.font = Font(name='Calibri', size=9, color='0F172A')
+                    detail_cell.font = Font(name='Calibri', size=9, color='0F172A', bold=(offset == 2))
                     detail_cell.alignment = Alignment(horizontal='left', vertical='center')
 
         used_rows = 1 if not visitors_payload else ((len(visitors_payload) - 1) // cards_per_row + 1) * card_rows
-        management_heading_row = base_row + used_rows + 2
+        management_heading_row = base_row + used_rows + 3
 
         sheet.merge_cells(f'A{management_heading_row}:P{management_heading_row}')
         mgmt_heading_cell = sheet[f'A{management_heading_row}']
@@ -1120,7 +1149,7 @@ class ReportGenerator:
             )
             cell = sheet.cell(row=table_start, column=col)
             cell.value = label
-            cell.font = Font(name='Calibri', size=10, bold=True, color='1E293B')
+            cell.font = Font(name='Calibri', size=10, bold=True, color='FFFFFF')
             cell.alignment = Alignment(horizontal='center', vertical='center')
             cell.fill = table_header_fill
             for c in range(col, end_col + 1):
@@ -1147,9 +1176,22 @@ class ReportGenerator:
                     cell = sheet.cell(row=table_row, column=col)
                     cell.value = value
                     cell.font = Font(name='Calibri', size=10, color='0F172A')
-                    cell.alignment = Alignment(horizontal='left', vertical='center')
+                    cell.alignment = Alignment(horizontal='left', vertical='center', wrap_text=True)
+                    if table_row % 2 == 0:
+                        cell.fill = zebra_fill
                     for c in range(col, end_col + 1):
                         sheet.cell(row=table_row, column=c).border = card_border
+                        if table_row % 2 == 0:
+                            sheet.cell(row=table_row, column=c).fill = zebra_fill
+
+                status_col = header_columns[4]
+                status_cell = sheet.cell(row=table_row, column=status_col)
+                status_text = str(item.get('status', '')).strip().lower()
+                status_cell.alignment = Alignment(horizontal='center', vertical='center')
+                if status_text == 'active':
+                    status_cell.fill = status_active_fill
+                elif status_text == 'inactive':
+                    status_cell.fill = status_inactive_fill
                 table_row += 1
         else:
             sheet.merge_cells(f'A{table_row}:P{table_row}')
@@ -1158,6 +1200,7 @@ class ReportGenerator:
             cell.font = Font(name='Calibri', size=10, italic=True, color='64748B')
             cell.alignment = Alignment(horizontal='left', vertical='center')
 
+        sheet.auto_filter.ref = f"A{table_start}:P{max(table_start, table_row - 1)}"
         sheet.freeze_panes = 'A6'
         workbook.save(filepath)
 
