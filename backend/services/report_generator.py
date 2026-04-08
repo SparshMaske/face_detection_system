@@ -1,5 +1,6 @@
 import os
 import csv
+import shutil
 from datetime import datetime
 from glob import glob
 from typing import List, Optional, Tuple
@@ -24,6 +25,16 @@ try:
     from fpdf import FPDF
 except ModuleNotFoundError:
     FPDF = None
+
+try:
+    from openpyxl import Workbook
+    from openpyxl.drawing.image import Image as XLImage
+    from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+    from openpyxl.utils import get_column_letter
+
+    OPENPYXL_AVAILABLE = True
+except ModuleNotFoundError:
+    OPENPYXL_AVAILABLE = False
 
 class ReportGenerator:
     def __init__(self):
@@ -55,6 +66,11 @@ class ReportGenerator:
             return
         if FPDF is None:
             raise ModuleNotFoundError('No PDF backend installed (reportlab/fpdf)')
+
+    @staticmethod
+    def _ensure_excel_backend():
+        if not OPENPYXL_AVAILABLE:
+            raise ModuleNotFoundError('openpyxl')
 
     @staticmethod
     def _parse_datetime(value, is_end=False):
@@ -859,43 +875,28 @@ class ReportGenerator:
 
         pdf.output(filepath)
 
-    def generate_pdf_report(self, start_date, end_date, report_type='daily', event_name=None, event_id=None):
-        self._ensure_pdf_backend()
-        safe_event_name = (event_name or '').strip().replace(' ', '_')
-        if safe_event_name:
-            filename = f"Visitor_Report_{safe_event_name}_{report_type}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
-        else:
-            filename = f"Visitor_Report_{report_type}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
-        filepath = os.path.join(self.reports_dir, filename)
-
-        s_date = self._parse_datetime(start_date, is_end=False)
-        e_date = self._parse_datetime(end_date, is_end=True)
-        if e_date < s_date:
-            raise ValueError('end_date must be on/after start_date')
-
+    def _collect_event_visitors_payload(self, start_dt, end_dt):
         sessions = VisitorSession.query.filter(
-            VisitorSession.entry_time <= e_date,
-            or_(VisitorSession.exit_time.is_(None), VisitorSession.exit_time >= s_date),
+            VisitorSession.entry_time <= end_dt,
+            or_(VisitorSession.exit_time.is_(None), VisitorSession.exit_time >= start_dt),
         ).order_by(VisitorSession.entry_time.asc()).all()
 
         grouped = {}
         now_local = datetime.now()
         for session in sessions:
-            visitor_id = session.visitor_id
-            start = max(session.entry_time, s_date)
-            end = min(session.exit_time or now_local, e_date)
-            if end < start:
+            visitor_db_id = session.visitor_id
+            overlap_start = max(session.entry_time, start_dt)
+            overlap_end = min(session.exit_time or now_local, end_dt)
+            if overlap_end < overlap_start:
                 continue
-            item = grouped.setdefault(visitor_id, {
+            item = grouped.setdefault(visitor_db_id, {
                 'first_in': None,
                 'last_out': None,
-                'sessions': 0,
             })
-            item['sessions'] += 1
-            if item['first_in'] is None or start < item['first_in']:
-                item['first_in'] = start
-            if item['last_out'] is None or end > item['last_out']:
-                item['last_out'] = end
+            if item['first_in'] is None or overlap_start < item['first_in']:
+                item['first_in'] = overlap_start
+            if item['last_out'] is None or overlap_end > item['last_out']:
+                item['last_out'] = overlap_end
 
         visitors_payload = []
         if grouped:
@@ -917,6 +918,7 @@ class ReportGenerator:
                 canonical_code = visitor.visitor_id if visitor else f'VISITOR-{visitor_db_id}'
                 first_in = summary['first_in']
                 last_out = summary['last_out']
+
                 snapshot_path = None
                 if visitor is not None:
                     snapshot_path = self._select_best_snapshot(
@@ -925,6 +927,7 @@ class ReportGenerator:
                         prefer_first=True,
                         reference_time=first_in,
                     )
+
                 duration_seconds = 0
                 if first_in and last_out:
                     duration_seconds = max(0, int((last_out - first_in).total_seconds()))
@@ -938,20 +941,251 @@ class ReportGenerator:
                     'snapshot_path': snapshot_path,
                 })
 
-        visitors_payload.sort(key=lambda item: item['first_in'])
-        management_payload = self._collect_management_payload(e_date)
+        return visitors_payload
 
-        title_text = f"Visitor Report ({report_type.title()})"
+    @staticmethod
+    def _build_report_title_subtitle(start_date, end_date, report_type='daily', event_name=None, event_id=None, visitor_count=0):
+        title_text = f"Visitor Report ({str(report_type or 'daily').title()})"
         subtitle_text = f"Period: {start_date} to {end_date}"
         if event_name:
             subtitle_text = f"Event: {event_name} | {subtitle_text}"
         if event_id:
             subtitle_text = f"{subtitle_text} | Event ID: {event_id}"
-        subtitle_text = f"{subtitle_text} | Visitors: {len(visitors_payload)}"
+        subtitle_text = f"{subtitle_text} | Visitors: {int(visitor_count or 0)}"
+        return title_text, subtitle_text
 
-        event_dir = None
-        if event_name:
-            event_dir = self._event_artifacts_dir(event_name)
+    def _archive_event_outputs(
+        self,
+        source_path,
+        event_name,
+        event_id,
+        start_date,
+        end_date,
+        visitors_payload,
+        management_payload,
+    ):
+        if not event_name:
+            return
+        event_dir = self._event_artifacts_dir(event_name)
+        archived_path = os.path.join(event_dir, os.path.basename(source_path))
+        if os.path.abspath(archived_path) != os.path.abspath(source_path):
+            shutil.copyfile(source_path, archived_path)
+        self._save_event_data_csv(
+            event_dir=event_dir,
+            event_name=event_name,
+            event_id=event_id,
+            start_date=start_date,
+            end_date=end_date,
+            visitors_payload=visitors_payload,
+            management_payload=management_payload,
+        )
+
+    def _build_event_visitors_with_excel(self, filepath, title_text, subtitle_text, visitors_payload, management_payload):
+        self._ensure_excel_backend()
+
+        workbook = Workbook()
+        sheet = workbook.active
+        sheet.title = 'Event Report'
+        sheet.sheet_view.showGridLines = False
+
+        for col_idx in range(1, 17):
+            sheet.column_dimensions[get_column_letter(col_idx)].width = 15
+
+        header_fill = PatternFill(start_color='0F172A', end_color='0F172A', fill_type='solid')
+        section_fill = PatternFill(start_color='1E293B', end_color='1E293B', fill_type='solid')
+        card_fill = PatternFill(start_color='F8FAFC', end_color='F8FAFC', fill_type='solid')
+        table_header_fill = PatternFill(start_color='E2E8F0', end_color='E2E8F0', fill_type='solid')
+        thin = Side(border_style='thin', color='CBD5E1')
+        card_border = Border(left=thin, right=thin, top=thin, bottom=thin)
+
+        sheet.merge_cells('A1:P1')
+        sheet['A1'] = title_text
+        sheet['A1'].font = Font(name='Calibri', size=18, bold=True, color='FFFFFF')
+        sheet['A1'].alignment = Alignment(horizontal='center', vertical='center')
+        sheet['A1'].fill = header_fill
+        sheet.row_dimensions[1].height = 30
+
+        sheet.merge_cells('A2:P2')
+        sheet['A2'] = subtitle_text
+        sheet['A2'].font = Font(name='Calibri', size=11, bold=False, color='FFFFFF')
+        sheet['A2'].alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+        sheet['A2'].fill = header_fill
+        sheet.row_dimensions[2].height = 36
+
+        sheet.merge_cells('A4:P4')
+        sheet['A4'] = 'Visitor Summary'
+        sheet['A4'].font = Font(name='Calibri', size=13, bold=True, color='FFFFFF')
+        sheet['A4'].alignment = Alignment(horizontal='left', vertical='center')
+        sheet['A4'].fill = section_fill
+        sheet.row_dimensions[4].height = 24
+
+        base_row = 6
+        card_rows = 16
+        cards_per_row = 4
+
+        if not visitors_payload:
+            sheet.merge_cells(f'A{base_row}:P{base_row}')
+            sheet[f'A{base_row}'] = 'No visitors found in selected window.'
+            sheet[f'A{base_row}'].font = Font(name='Calibri', size=11, italic=True, color='334155')
+        else:
+            for idx, visitor_item in enumerate(visitors_payload):
+                row_group = idx // cards_per_row
+                col_group = idx % cards_per_row
+                start_col = 1 + (col_group * 4)
+                end_col = start_col + 3
+                start_row = base_row + (row_group * card_rows)
+                end_row = start_row + card_rows - 1
+
+                for row_idx in range(start_row, end_row + 1):
+                    if start_row + 2 <= row_idx <= start_row + 8:
+                        sheet.row_dimensions[row_idx].height = 18
+                    else:
+                        sheet.row_dimensions[row_idx].height = max(sheet.row_dimensions[row_idx].height or 0, 16)
+                    for col_idx in range(start_col, end_col + 1):
+                        cell = sheet.cell(row=row_idx, column=col_idx)
+                        cell.border = card_border
+                        cell.fill = card_fill
+
+                sheet.merge_cells(
+                    f'{get_column_letter(start_col)}{start_row}:{get_column_letter(end_col)}{start_row}'
+                )
+                header_cell = sheet.cell(row=start_row, column=start_col)
+                header_cell.value = visitor_item.get('visitor_id', 'ID')
+                header_cell.font = Font(name='Calibri', size=11, bold=True, color='0F172A')
+                header_cell.alignment = Alignment(horizontal='center', vertical='center')
+
+                snapshot_path = visitor_item.get('snapshot_path')
+                if snapshot_path and os.path.exists(snapshot_path):
+                    try:
+                        img = XLImage(snapshot_path)
+                        img.width = 126
+                        img.height = 132
+                        anchor_col = min(16, start_col + 1)
+                        img.anchor = f'{get_column_letter(anchor_col)}{start_row + 2}'
+                        sheet.add_image(img)
+                    except Exception:
+                        sheet.merge_cells(
+                            f'{get_column_letter(start_col)}{start_row + 5}:{get_column_letter(end_col)}{start_row + 5}'
+                        )
+                        miss_cell = sheet.cell(row=start_row + 5, column=start_col)
+                        miss_cell.value = 'Snapshot unavailable'
+                        miss_cell.font = Font(name='Calibri', size=9, italic=True, color='64748B')
+                        miss_cell.alignment = Alignment(horizontal='center', vertical='center')
+                else:
+                    sheet.merge_cells(
+                        f'{get_column_letter(start_col)}{start_row + 5}:{get_column_letter(end_col)}{start_row + 5}'
+                    )
+                    miss_cell = sheet.cell(row=start_row + 5, column=start_col)
+                    miss_cell.value = 'Snapshot unavailable'
+                    miss_cell.font = Font(name='Calibri', size=9, italic=True, color='64748B')
+                    miss_cell.alignment = Alignment(horizontal='center', vertical='center')
+
+                details = [
+                    f"In: {visitor_item.get('first_in', '-')}",
+                    f"Out: {visitor_item.get('last_out', '-')}",
+                    f"Duration: {visitor_item.get('duration', '-')}",
+                ]
+                for offset, text in enumerate(details):
+                    detail_row = start_row + 11 + offset
+                    sheet.merge_cells(
+                        f'{get_column_letter(start_col)}{detail_row}:{get_column_letter(end_col)}{detail_row}'
+                    )
+                    detail_cell = sheet.cell(row=detail_row, column=start_col)
+                    detail_cell.value = text
+                    detail_cell.font = Font(name='Calibri', size=9, color='0F172A')
+                    detail_cell.alignment = Alignment(horizontal='left', vertical='center')
+
+        used_rows = 1 if not visitors_payload else ((len(visitors_payload) - 1) // cards_per_row + 1) * card_rows
+        management_heading_row = base_row + used_rows + 2
+
+        sheet.merge_cells(f'A{management_heading_row}:P{management_heading_row}')
+        mgmt_heading_cell = sheet[f'A{management_heading_row}']
+        mgmt_heading_cell.value = 'Management'
+        mgmt_heading_cell.font = Font(name='Calibri', size=13, bold=True, color='FFFFFF')
+        mgmt_heading_cell.alignment = Alignment(horizontal='left', vertical='center')
+        mgmt_heading_cell.fill = section_fill
+        sheet.row_dimensions[management_heading_row].height = 24
+
+        table_start = management_heading_row + 2
+        headers = ['Staff ID', 'Name', 'Department', 'Position', 'Status', 'Added']
+        header_columns = [1, 4, 7, 10, 13, 15]
+        header_spans = [3, 3, 3, 3, 2, 2]
+
+        for idx, label in enumerate(headers):
+            col = header_columns[idx]
+            span = header_spans[idx]
+            end_col = col + span - 1
+            sheet.merge_cells(
+                f'{get_column_letter(col)}{table_start}:{get_column_letter(end_col)}{table_start}'
+            )
+            cell = sheet.cell(row=table_start, column=col)
+            cell.value = label
+            cell.font = Font(name='Calibri', size=10, bold=True, color='1E293B')
+            cell.alignment = Alignment(horizontal='center', vertical='center')
+            cell.fill = table_header_fill
+            for c in range(col, end_col + 1):
+                sheet.cell(row=table_start, column=c).border = card_border
+
+        table_row = table_start + 1
+        if management_payload:
+            for item in management_payload:
+                values = [
+                    item.get('staff_id', ''),
+                    item.get('name', ''),
+                    item.get('department', '-'),
+                    item.get('position', '-'),
+                    item.get('status', ''),
+                    item.get('created_at', ''),
+                ]
+                for idx, value in enumerate(values):
+                    col = header_columns[idx]
+                    span = header_spans[idx]
+                    end_col = col + span - 1
+                    sheet.merge_cells(
+                        f'{get_column_letter(col)}{table_row}:{get_column_letter(end_col)}{table_row}'
+                    )
+                    cell = sheet.cell(row=table_row, column=col)
+                    cell.value = value
+                    cell.font = Font(name='Calibri', size=10, color='0F172A')
+                    cell.alignment = Alignment(horizontal='left', vertical='center')
+                    for c in range(col, end_col + 1):
+                        sheet.cell(row=table_row, column=c).border = card_border
+                table_row += 1
+        else:
+            sheet.merge_cells(f'A{table_row}:P{table_row}')
+            cell = sheet[f'A{table_row}']
+            cell.value = 'No staff data available for this event window.'
+            cell.font = Font(name='Calibri', size=10, italic=True, color='64748B')
+            cell.alignment = Alignment(horizontal='left', vertical='center')
+
+        sheet.freeze_panes = 'A6'
+        workbook.save(filepath)
+
+    def generate_pdf_report(self, start_date, end_date, report_type='daily', event_name=None, event_id=None):
+        self._ensure_pdf_backend()
+        safe_event_name = (event_name or '').strip().replace(' ', '_')
+        if safe_event_name:
+            filename = f"Visitor_Report_{safe_event_name}_{report_type}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
+        else:
+            filename = f"Visitor_Report_{report_type}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
+        filepath = os.path.join(self.reports_dir, filename)
+
+        s_date = self._parse_datetime(start_date, is_end=False)
+        e_date = self._parse_datetime(end_date, is_end=True)
+        if e_date < s_date:
+            raise ValueError('end_date must be on/after start_date')
+
+        visitors_payload = self._collect_event_visitors_payload(s_date, e_date)
+        management_payload = self._collect_management_payload(e_date)
+        title_text, subtitle_text = self._build_report_title_subtitle(
+            start_date=start_date,
+            end_date=end_date,
+            report_type=report_type,
+            event_name=event_name,
+            event_id=event_id,
+            visitor_count=len(visitors_payload),
+        )
+
         if REPORTLAB_AVAILABLE:
             self._build_event_visitors_with_reportlab(
                 filepath,
@@ -969,24 +1203,67 @@ class ReportGenerator:
                 management_payload,
             )
 
-        if event_dir:
-            try:
-                event_pdf_path = os.path.join(event_dir, os.path.basename(filepath))
-                if event_pdf_path != filepath:
-                    with open(filepath, 'rb') as src, open(event_pdf_path, 'wb') as dst:
-                        dst.write(src.read())
-                self._save_event_data_csv(
-                    event_dir=event_dir,
-                    event_name=event_name,
-                    event_id=event_id,
-                    start_date=start_date,
-                    end_date=end_date,
-                    visitors_payload=visitors_payload,
-                    management_payload=management_payload,
-                )
-            except Exception:
-                # Report download should still succeed even if local archival fails.
-                pass
+        try:
+            self._archive_event_outputs(
+                source_path=filepath,
+                event_name=event_name,
+                event_id=event_id,
+                start_date=start_date,
+                end_date=end_date,
+                visitors_payload=visitors_payload,
+                management_payload=management_payload,
+            )
+        except Exception:
+            # Report download should still succeed even if local archival fails.
+            pass
+
+        return filepath
+
+    def generate_excel_report(self, start_date, end_date, report_type='daily', event_name=None, event_id=None):
+        self._ensure_excel_backend()
+        safe_event_name = (event_name or '').strip().replace(' ', '_')
+        if safe_event_name:
+            filename = f"Visitor_Report_{safe_event_name}_{report_type}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+        else:
+            filename = f"Visitor_Report_{report_type}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+        filepath = os.path.join(self.reports_dir, filename)
+
+        s_date = self._parse_datetime(start_date, is_end=False)
+        e_date = self._parse_datetime(end_date, is_end=True)
+        if e_date < s_date:
+            raise ValueError('end_date must be on/after start_date')
+
+        visitors_payload = self._collect_event_visitors_payload(s_date, e_date)
+        management_payload = self._collect_management_payload(e_date)
+        title_text, subtitle_text = self._build_report_title_subtitle(
+            start_date=start_date,
+            end_date=end_date,
+            report_type=report_type,
+            event_name=event_name,
+            event_id=event_id,
+            visitor_count=len(visitors_payload),
+        )
+
+        self._build_event_visitors_with_excel(
+            filepath,
+            title_text,
+            subtitle_text,
+            visitors_payload,
+            management_payload,
+        )
+
+        try:
+            self._archive_event_outputs(
+                source_path=filepath,
+                event_name=event_name,
+                event_id=event_id,
+                start_date=start_date,
+                end_date=end_date,
+                visitors_payload=visitors_payload,
+                management_payload=management_payload,
+            )
+        except Exception:
+            pass
 
         return filepath
 

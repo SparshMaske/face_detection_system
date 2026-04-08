@@ -1,18 +1,14 @@
-import csv
 import json
 import os
 from datetime import datetime
-from io import StringIO
 from threading import Lock
 from typing import Dict, List, Optional, Tuple
 
-from flask import Response, jsonify, request
+from flask import jsonify, request, send_file
 from flask_jwt_extended import jwt_required
-from sqlalchemy import or_
 
 from models import db
 from models.camera import Camera
-from models.visitor import Visitor, VisitorSession
 from routes import events_bp
 
 
@@ -60,13 +56,6 @@ def _parse_datetime_optional(raw_value) -> Optional[datetime]:
         return None
 
 
-def _format_duration(seconds: float) -> str:
-    total = max(0, int(seconds or 0))
-    hours, remainder = divmod(total, 3600)
-    minutes, secs = divmod(remainder, 60)
-    return f"{hours:02d}:{minutes:02d}:{secs:02d}"
-
-
 def _safe_token(raw_value: str) -> str:
     text = str(raw_value or '').strip()
     if not text:
@@ -81,16 +70,6 @@ def _safe_token(raw_value: str) -> str:
             cleaned.append('_')
     normalized = ''.join(cleaned).strip('_')
     return normalized or 'event'
-
-
-def _event_artifacts_dir(event_name: str) -> str:
-    base_dir = os.path.dirname(os.path.abspath(__file__))
-    reports_dir = os.path.join(base_dir, '..', 'reports')
-    events_dir = os.path.join(reports_dir, 'events')
-    os.makedirs(events_dir, exist_ok=True)
-    event_dir = os.path.join(events_dir, _safe_token(event_name))
-    os.makedirs(event_dir, exist_ok=True)
-    return event_dir
 
 
 def _history_path():
@@ -812,9 +791,10 @@ def delete_scheduled_event(event_id):
         return jsonify({'message': 'Scheduled event deleted'})
 
 
+@events_bp.route('/completed/<event_id>/export-excel', methods=['GET'])
 @events_bp.route('/completed/<event_id>/export-csv', methods=['GET'])
 @jwt_required()
-def export_completed_event_csv(event_id):
+def export_completed_event_excel(event_id):
     with _EVENT_LOCK:
         records = _load_event_registry()
         _sync_registry_status(records)
@@ -829,113 +809,29 @@ def export_completed_event_csv(event_id):
 
     status = str(event_record.get('status') or '').lower()
     if status != 'completed' and _now() <= end_dt:
-        return jsonify({'error': 'CSV export is available only for completed events'}), 400
+        return jsonify({'error': 'Excel export is available only for completed events'}), 400
 
-    sessions = VisitorSession.query.filter(
-        VisitorSession.entry_time <= end_dt,
-        or_(VisitorSession.exit_time.is_(None), VisitorSession.exit_time >= start_dt),
-    ).all()
-
-    now_local = _now()
-    grouped = {}
-    for session in sessions:
-        overlap_start = max(session.entry_time, start_dt)
-        overlap_end = min(session.exit_time or now_local, end_dt)
-        if overlap_end < overlap_start:
-            continue
-
-        item = grouped.setdefault(session.visitor_id, {
-            'first_in': None,
-            'last_out': None,
-        })
-        if item['first_in'] is None or overlap_start < item['first_in']:
-            item['first_in'] = overlap_start
-        if item['last_out'] is None or overlap_end > item['last_out']:
-            item['last_out'] = overlap_end
-
-    visitors = Visitor.query.filter(Visitor.id.in_(grouped.keys())).all() if grouped else []
-    visitor_by_id = {visitor.id: visitor for visitor in visitors}
-
-    reports_root = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'reports', 'visitors')
-    output = StringIO()
-    writer = csv.writer(output)
-    writer.writerow([
-        'event_id',
-        'event_name',
-        'visitor_id',
-        'date',
-        'first_in_time',
-        'last_out_time',
-        'duration',
-        'pdf_file',
-        'pdf_content',
-    ])
-
-    ordered_visitor_ids = sorted(
-        grouped.keys(),
-        key=lambda vid: grouped[vid].get('first_in') or datetime.max,
-    )
-    display_id_map = {
-        visitor_db_id: f"ID{idx}"
-        for idx, visitor_db_id in enumerate(ordered_visitor_ids, start=1)
-    }
-
-    for visitor_db_id in ordered_visitor_ids:
-        summary = grouped[visitor_db_id]
-        visitor = visitor_by_id.get(visitor_db_id)
-        visitor_code = display_id_map.get(visitor_db_id, f'ID{visitor_db_id}')
-        canonical_code = visitor.visitor_id if visitor else f'VISITOR-{visitor_db_id}'
-        first_in = summary.get('first_in')
-        last_out = summary.get('last_out')
-        duration_seconds = 0
-        if first_in and last_out:
-            duration_seconds = max(0, int((last_out - first_in).total_seconds()))
-        duration_text = _format_duration(duration_seconds)
-
-        pdf_filename = f"{canonical_code}_report.pdf"
-        pdf_path = os.path.join(reports_root, pdf_filename)
-        pdf_file = pdf_filename if os.path.exists(pdf_path) else ''
-
-        date_text = first_in.strftime('%Y-%m-%d') if first_in else ''
-        first_in_text = first_in.strftime('%Y-%m-%d %H:%M:%S') if first_in else ''
-        last_out_text = last_out.strftime('%Y-%m-%d %H:%M:%S') if last_out else ''
-        pdf_content = (
-            f"Date={date_text}; First In={first_in_text}; "
-            f"Last Out={last_out_text}; Duration={duration_text}"
-        )
-
-        writer.writerow([
-            event_record.get('event_id'),
-            event_record.get('event_name'),
-            visitor_code,
-            date_text,
-            first_in_text,
-            last_out_text,
-            duration_text,
-            pdf_file,
-            pdf_content,
-        ])
-
-    csv_bytes = output.getvalue().encode('utf-8')
-    output.close()
-
-    safe_event_name = str(event_record.get('event_name') or 'event').strip().replace(' ', '_')
-    filename = f"{safe_event_name}_{event_record.get('event_id')}_results.csv"
-    event_name = event_record.get('event_name') or 'event'
-    event_folder = _event_artifacts_dir(event_name)
-    event_csv_path = os.path.join(event_folder, filename)
     try:
-        with open(event_csv_path, 'wb') as fp:
-            fp.write(csv_bytes)
-    except Exception:
-        # CSV download should still work even if local archival fails.
-        pass
+        from services.report_generator import ReportGenerator
+        generator = ReportGenerator()
+        filepath = generator.generate_excel_report(
+            start_date=start_dt.isoformat(),
+            end_date=end_dt.isoformat(),
+            report_type='event_summary',
+            event_name=event_record.get('event_name') or '',
+            event_id=event_record.get('event_id') or '',
+        )
+    except ModuleNotFoundError:
+        return jsonify({'error': 'Missing dependency: openpyxl. Install backend requirements.'}), 500
+    except Exception as exc:
+        return jsonify({'error': f'Failed to generate Excel export: {exc}'}), 500
 
-    return Response(
-        csv_bytes,
-        mimetype='text/csv',
-        headers={
-            'Content-Disposition': f'attachment; filename={filename}',
-            'Cache-Control': 'no-cache, no-store, must-revalidate',
-        },
+    safe_event_name = _safe_token(event_record.get('event_name') or 'event')
+    filename = f"{safe_event_name}_{event_record.get('event_id')}_results.xlsx"
+    return send_file(
+        filepath,
+        as_attachment=True,
+        download_name=filename,
+        mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        max_age=0,
     )

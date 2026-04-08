@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import Card from '../components/Card';
 import {
   deleteScheduledEvent,
-  downloadCompletedEventCsv,
+  downloadCompletedEventExcel,
   getEventManagement,
 } from '../services/eventService';
 
@@ -83,26 +83,29 @@ export default function EventManagement() {
     }
   };
 
-  const handleDownloadCsv = async (eventItem) => {
+  const handleDownloadExcel = async (eventItem) => {
     const eventId = eventItem?.event_id;
     if (!eventId) return;
 
     try {
       setBusyDownloadId(eventId);
       setError('');
-      const res = await downloadCompletedEventCsv(eventId);
-      const blob = new Blob([res.data], { type: 'text/csv;charset=utf-8;' });
+      const res = await downloadCompletedEventExcel(eventId);
+      const blob = new Blob(
+        [res.data],
+        { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' },
+      );
       const safeName = String(eventItem.event_name || 'event').trim().replace(/\s+/g, '_');
       const href = URL.createObjectURL(blob);
       const link = document.createElement('a');
       link.href = href;
-      link.download = `${safeName}_${eventId}_results.csv`;
+      link.download = `${safeName}_${eventId}_results.xlsx`;
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
       URL.revokeObjectURL(href);
     } catch (err) {
-      setError(err?.response?.data?.error || 'Unable to download CSV for completed event');
+      setError(err?.response?.data?.error || 'Unable to download Excel for completed event');
     } finally {
       setBusyDownloadId('');
     }
@@ -211,7 +214,7 @@ export default function EventManagement() {
                   <th>Event</th>
                   <th>Window</th>
                   <th>Completed At</th>
-                  <th>CSV</th>
+                  <th>Excel</th>
                 </tr>
               </thead>
               <tbody>
@@ -224,10 +227,10 @@ export default function EventManagement() {
                       <button
                         type="button"
                         className="btn btn-secondary"
-                        onClick={() => handleDownloadCsv(eventItem)}
+                        onClick={() => handleDownloadExcel(eventItem)}
                         disabled={busyDownloadId === eventItem.event_id}
                       >
-                        {busyDownloadId === eventItem.event_id ? 'Preparing...' : 'Download CSV'}
+                        {busyDownloadId === eventItem.event_id ? 'Preparing...' : 'Download Excel'}
                       </button>
                     </td>
                   </tr>

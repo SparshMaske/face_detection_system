@@ -15,7 +15,7 @@ export const getEventManagement = async () => api.get('/events/management');
 export const deleteScheduledEvent = async (eventId) =>
   api.delete(`/events/scheduled/${encodeURIComponent(eventId)}`);
 
-export const downloadCompletedEventCsv = async (eventId) =>
-  api.get(`/events/completed/${encodeURIComponent(eventId)}/export-csv`, {
+export const downloadCompletedEventExcel = async (eventId) =>
+  api.get(`/events/completed/${encodeURIComponent(eventId)}/export-excel`, {
     responseType: 'blob',
   });
