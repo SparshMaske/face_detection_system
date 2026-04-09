@@ -992,216 +992,277 @@ class ReportGenerator:
         sheet.page_setup.fitToHeight = False
         sheet.print_options.horizontalCentered = True
 
-        for col_idx in range(1, 17):
-            sheet.column_dimensions[get_column_letter(col_idx)].width = 13.8
+        def _format_human_date(raw_value):
+            if raw_value is None:
+                return '-'
+            text = str(raw_value).strip()
+            if not text or text == '-':
+                return '-'
+            normalized = text.replace('Z', '')
+            try:
+                dt = datetime.fromisoformat(normalized.replace(' ', 'T'))
+                return dt.strftime('%B %d, %Y').replace(' 0', ' ')
+            except Exception:
+                pass
+            if len(text) >= 10:
+                try:
+                    dt = datetime.fromisoformat(text[:10])
+                    return dt.strftime('%B %d, %Y').replace(' 0', ' ')
+                except Exception:
+                    pass
+            return text
+
+        def _format_period_from_subtitle(raw_subtitle):
+            period_token = ''
+            if raw_subtitle:
+                for segment in str(raw_subtitle).split('|'):
+                    token = segment.strip()
+                    if token.lower().startswith('period:'):
+                        period_token = token.split(':', 1)[1].strip()
+                        break
+            if not period_token:
+                return '-'
+            if ' to ' in period_token:
+                start_raw, end_raw = [part.strip() for part in period_token.split(' to ', 1)]
+                start_fmt = _format_human_date(start_raw)
+                end_fmt = _format_human_date(end_raw)
+                if start_fmt == end_fmt:
+                    return start_fmt
+                return f"{start_fmt} - {end_fmt}"
+            return _format_human_date(period_token)
+
+        event_label = 'N/A'
+        if subtitle_text:
+            for segment in str(subtitle_text).split('|'):
+                token = segment.strip()
+                if token.lower().startswith('event:'):
+                    event_label = token.split(':', 1)[1].strip() or 'N/A'
+                    break
+        date_label = _format_period_from_subtitle(subtitle_text)
+        metadata_text = (
+            f"Event: {event_label} | Date: {date_label} | Total Visitors: {len(visitors_payload or [])}"
+        )
+
+        # 4 visitor blocks x (label,value) columns = A:H
+        for col_idx in (1, 3, 5, 7):
+            sheet.column_dimensions[get_column_letter(col_idx)].width = 11
+        for col_idx in (2, 4, 6, 8):
+            sheet.column_dimensions[get_column_letter(col_idx)].width = 16
 
         title_fill = PatternFill(start_color='0F172A', end_color='0F172A', fill_type='solid')
-        subtitle_fill = PatternFill(start_color='1E293B', end_color='1E293B', fill_type='solid')
-        section_fill = PatternFill(start_color='1F3558', end_color='1F3558', fill_type='solid')
-        card_fill = PatternFill(start_color='F8FAFC', end_color='F8FAFC', fill_type='solid')
-        card_header_fill = PatternFill(start_color='334155', end_color='334155', fill_type='solid')
-        table_header_fill = PatternFill(start_color='1E293B', end_color='1E293B', fill_type='solid')
-        zebra_fill = PatternFill(start_color='F1F5F9', end_color='F1F5F9', fill_type='solid')
+        metadata_fill = PatternFill(start_color='F1F5F9', end_color='F1F5F9', fill_type='solid')
+        section_fill = PatternFill(start_color='1E293B', end_color='1E293B', fill_type='solid')
+        visitor_header_fill = PatternFill(start_color='334155', end_color='334155', fill_type='solid')
+        label_fill = PatternFill(start_color='EFF6FF', end_color='EFF6FF', fill_type='solid')
+        zebra_white_fill = PatternFill(start_color='FFFFFF', end_color='FFFFFF', fill_type='solid')
+        zebra_alt_fill = PatternFill(start_color='F8FAFC', end_color='F8FAFC', fill_type='solid')
         status_active_fill = PatternFill(start_color='DCFCE7', end_color='DCFCE7', fill_type='solid')
         status_inactive_fill = PatternFill(start_color='FEE2E2', end_color='FEE2E2', fill_type='solid')
-        thin = Side(border_style='thin', color='CBD5E1')
-        medium = Side(border_style='medium', color='94A3B8')
-        card_border = Border(left=thin, right=thin, top=thin, bottom=thin)
-        card_outer_border = Border(left=medium, right=medium, top=medium, bottom=medium)
 
-        sheet.merge_cells('A1:P1')
-        sheet['A1'] = title_text
-        sheet['A1'].font = Font(name='Calibri', size=20, bold=True, color='FFFFFF')
+        thin = Side(border_style='thin', color='CBD5E1')
+        all_thin_border = Border(left=thin, right=thin, top=thin, bottom=thin)
+        top_bottom_border = Border(top=thin, bottom=thin)
+        left_top_bottom_border = Border(left=thin, top=thin, bottom=thin)
+        right_top_bottom_border = Border(right=thin, top=thin, bottom=thin)
+
+        sheet.merge_cells('A1:H1')
+        sheet['A1'] = 'Visitor Report (Event Summary)'
+        sheet['A1'].font = Font(name='Calibri', size=18, bold=True, color='FFFFFF')
         sheet['A1'].alignment = Alignment(horizontal='center', vertical='center')
         sheet['A1'].fill = title_fill
-        sheet.row_dimensions[1].height = 34
+        sheet.row_dimensions[1].height = 30
 
-        sheet.merge_cells('A2:P2')
-        sheet['A2'] = subtitle_text
-        sheet['A2'].font = Font(name='Calibri', size=11, bold=False, color='E2E8F0')
+        sheet.merge_cells('A2:H2')
+        sheet['A2'] = metadata_text
+        sheet['A2'].font = Font(name='Calibri', size=10, color='334155')
         sheet['A2'].alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
-        sheet['A2'].fill = subtitle_fill
-        sheet.row_dimensions[2].height = 30
+        sheet['A2'].fill = metadata_fill
+        sheet.row_dimensions[2].height = 22
 
-        sheet.merge_cells('A4:P4')
+        sheet.row_dimensions[3].height = 6
+
+        sheet.merge_cells('A4:H4')
         sheet['A4'] = 'Visitor Summary'
-        sheet['A4'].font = Font(name='Calibri', size=13, bold=True, color='FFFFFF')
-        sheet['A4'].alignment = Alignment(horizontal='left', vertical='center')
+        sheet['A4'].font = Font(name='Calibri', size=12, bold=True, color='FFFFFF')
+        sheet['A4'].alignment = Alignment(horizontal='left', vertical='center', indent=1)
         sheet['A4'].fill = section_fill
-        sheet.row_dimensions[4].height = 24
+        sheet.row_dimensions[4].height = 20
 
-        base_row = 6
-        card_rows = 17
-        cards_per_row = 4
+        visitor_start_row = 5
+        rows_per_visitor_band = 6  # header + snapshot + 4 info rows
+        band_gap_rows = 1
+        visitors_per_band = 4
+        info_labels = ('First In', 'Last Out', 'Duration', 'Date')
 
+        last_visitor_row = 10
         if not visitors_payload:
-            sheet.merge_cells(f'A{base_row}:P{base_row}')
-            sheet[f'A{base_row}'] = 'No visitors found in selected window.'
-            sheet[f'A{base_row}'].font = Font(name='Calibri', size=11, italic=True, color='334155')
-            sheet[f'A{base_row}'].alignment = Alignment(horizontal='center', vertical='center')
+            for row_idx, h in ((5, 18), (6, 105), (7, 16), (8, 16), (9, 16), (10, 16)):
+                sheet.row_dimensions[row_idx].height = h
+                for col_idx in range(1, 9):
+                    cell = sheet.cell(row=row_idx, column=col_idx)
+                    cell.border = all_thin_border
+                    cell.fill = zebra_white_fill
+            sheet.merge_cells('A5:H5')
+            sheet['A5'] = 'No visitors found in selected window.'
+            sheet['A5'].font = Font(name='Calibri', size=10, bold=True, color='FFFFFF')
+            sheet['A5'].alignment = Alignment(horizontal='center', vertical='center')
+            sheet['A5'].fill = visitor_header_fill
         else:
-            for idx, visitor_item in enumerate(visitors_payload):
-                row_group = idx // cards_per_row
-                col_group = idx % cards_per_row
-                start_col = 1 + (col_group * 4)
-                end_col = start_col + 3
-                start_row = base_row + (row_group * card_rows)
-                end_row = start_row + card_rows - 1
+            total_bands = (len(visitors_payload) + visitors_per_band - 1) // visitors_per_band
+            for band_idx in range(total_bands):
+                band_row_start = visitor_start_row + (band_idx * (rows_per_visitor_band + band_gap_rows))
+                header_row = band_row_start
+                snapshot_row = band_row_start + 1
+                first_info_row = band_row_start + 2
+                last_info_row = band_row_start + 5
+                last_visitor_row = last_info_row
 
-                for row_idx in range(start_row, end_row + 1):
-                    if start_row + 3 <= row_idx <= start_row + 9:
-                        sheet.row_dimensions[row_idx].height = 18
+                sheet.row_dimensions[header_row].height = 18
+                sheet.row_dimensions[snapshot_row].height = 105
+                for info_row in range(first_info_row, last_info_row + 1):
+                    sheet.row_dimensions[info_row].height = 16
+
+                # Row 5 style (clean uninterrupted header bar appearance)
+                for col_idx in range(1, 9):
+                    cell = sheet.cell(row=header_row, column=col_idx)
+                    cell.fill = visitor_header_fill
+                    if col_idx == 1:
+                        cell.border = left_top_bottom_border
+                    elif col_idx == 8:
+                        cell.border = right_top_bottom_border
                     else:
-                        sheet.row_dimensions[row_idx].height = max(sheet.row_dimensions[row_idx].height or 0, 17)
-                    for col_idx in range(start_col, end_col + 1):
-                        cell = sheet.cell(row=row_idx, column=col_idx)
-                        cell.border = card_border
-                        cell.fill = card_fill
+                        cell.border = top_bottom_border
 
-                for row_idx in (start_row, end_row):
-                    for col_idx in range(start_col, end_col + 1):
-                        cell = sheet.cell(row=row_idx, column=col_idx)
-                        cell.border = card_outer_border
-                for row_idx in range(start_row, end_row + 1):
-                    sheet.cell(row=row_idx, column=start_col).border = card_outer_border
-                    sheet.cell(row=row_idx, column=end_col).border = card_outer_border
+                band_visitors = visitors_payload[band_idx * visitors_per_band:(band_idx + 1) * visitors_per_band]
+                for slot_idx in range(visitors_per_band):
+                    label_col = (slot_idx * 2) + 1
+                    value_col = label_col + 1
+                    block_fill = zebra_white_fill if (slot_idx % 2 == 0) else zebra_alt_fill
+                    visitor_item = band_visitors[slot_idx] if slot_idx < len(band_visitors) else None
 
-                sheet.merge_cells(
-                    f'{get_column_letter(start_col)}{start_row}:{get_column_letter(end_col)}{start_row}'
-                )
-                header_cell = sheet.cell(row=start_row, column=start_col)
-                header_cell.value = visitor_item.get('visitor_id', 'ID')
-                header_cell.font = Font(name='Calibri', size=11, bold=True, color='FFFFFF')
-                header_cell.alignment = Alignment(horizontal='center', vertical='center')
-                header_cell.fill = card_header_fill
-
-                sheet.merge_cells(
-                    f'{get_column_letter(start_col)}{start_row + 1}:{get_column_letter(end_col)}{start_row + 1}'
-                )
-                date_cell = sheet.cell(row=start_row + 1, column=start_col)
-                date_cell.value = f"Date: {visitor_item.get('date', '-')}"
-                date_cell.font = Font(name='Calibri', size=8, bold=False, color='475569')
-                date_cell.alignment = Alignment(horizontal='center', vertical='center')
-
-                snapshot_path = visitor_item.get('snapshot_path')
-                if snapshot_path and os.path.exists(snapshot_path):
-                    try:
-                        img = XLImage(snapshot_path)
-                        img.width = 118
-                        img.height = 124
-                        anchor_col = min(16, start_col + 1)
-                        img.anchor = f'{get_column_letter(anchor_col)}{start_row + 3}'
-                        sheet.add_image(img)
-                    except Exception:
-                        sheet.merge_cells(
-                            f'{get_column_letter(start_col)}{start_row + 6}:{get_column_letter(end_col)}{start_row + 6}'
-                        )
-                        miss_cell = sheet.cell(row=start_row + 6, column=start_col)
-                        miss_cell.value = 'Snapshot unavailable'
-                        miss_cell.font = Font(name='Calibri', size=9, italic=True, color='64748B')
-                        miss_cell.alignment = Alignment(horizontal='center', vertical='center')
-                else:
                     sheet.merge_cells(
-                        f'{get_column_letter(start_col)}{start_row + 6}:{get_column_letter(end_col)}{start_row + 6}'
+                        f"{get_column_letter(label_col)}{header_row}:{get_column_letter(value_col)}{header_row}"
                     )
-                    miss_cell = sheet.cell(row=start_row + 6, column=start_col)
-                    miss_cell.value = 'Snapshot unavailable'
-                    miss_cell.font = Font(name='Calibri', size=9, italic=True, color='64748B')
-                    miss_cell.alignment = Alignment(horizontal='center', vertical='center')
+                    header_cell = sheet.cell(row=header_row, column=label_col)
+                    header_cell.value = (visitor_item or {}).get('visitor_id', '')
+                    header_cell.font = Font(name='Calibri', size=10, bold=True, color='FFFFFF')
+                    header_cell.alignment = Alignment(horizontal='center', vertical='center')
+                    header_cell.fill = visitor_header_fill
 
-                details = [
-                    f"In: {visitor_item.get('first_in', '-')}",
-                    f"Out: {visitor_item.get('last_out', '-')}",
-                    f"Duration: {visitor_item.get('duration', '-')}",
-                ]
-                for offset, text in enumerate(details):
-                    detail_row = start_row + 12 + offset
                     sheet.merge_cells(
-                        f'{get_column_letter(start_col)}{detail_row}:{get_column_letter(end_col)}{detail_row}'
+                        f"{get_column_letter(label_col)}{snapshot_row}:{get_column_letter(value_col)}{snapshot_row}"
                     )
-                    detail_cell = sheet.cell(row=detail_row, column=start_col)
-                    detail_cell.value = text
-                    detail_cell.font = Font(name='Calibri', size=9, color='0F172A', bold=(offset == 2))
-                    detail_cell.alignment = Alignment(horizontal='left', vertical='center')
+                    for col_idx in (label_col, value_col):
+                        snap_cell = sheet.cell(row=snapshot_row, column=col_idx)
+                        snap_cell.border = all_thin_border
+                        snap_cell.fill = block_fill
 
-        used_rows = 1 if not visitors_payload else ((len(visitors_payload) - 1) // cards_per_row + 1) * card_rows
-        management_heading_row = base_row + used_rows + 3
+                    snapshot_path = (visitor_item or {}).get('snapshot_path')
+                    if visitor_item and snapshot_path and os.path.exists(snapshot_path):
+                        try:
+                            img = XLImage(snapshot_path)
+                            img.width = 90
+                            img.height = 90
+                            img.anchor = f"{get_column_letter(label_col)}{snapshot_row}"
+                            sheet.add_image(img)
+                        except Exception:
+                            pass
 
-        sheet.merge_cells(f'A{management_heading_row}:P{management_heading_row}')
+                    values = {
+                        'First In': (visitor_item or {}).get('first_in', '-'),
+                        'Last Out': (visitor_item or {}).get('last_out', '-'),
+                        'Duration': (visitor_item or {}).get('duration', '-'),
+                        'Date': _format_human_date((visitor_item or {}).get('date', '-')),
+                    }
+                    for row_offset, label_text in enumerate(info_labels):
+                        row_idx = first_info_row + row_offset
+                        label_cell = sheet.cell(row=row_idx, column=label_col)
+                        value_cell = sheet.cell(row=row_idx, column=value_col)
+
+                        label_cell.value = label_text
+                        label_cell.font = Font(name='Calibri', size=9, bold=True, color='334155')
+                        label_cell.alignment = Alignment(horizontal='right', vertical='center')
+                        label_cell.fill = label_fill
+                        label_cell.border = all_thin_border
+
+                        value_cell.value = values[label_text]
+                        value_cell.font = Font(name='Calibri', size=9, color='334155')
+                        value_cell.alignment = Alignment(horizontal='left', vertical='center', wrap_text=True)
+                        value_cell.fill = block_fill
+                        value_cell.border = all_thin_border
+
+        management_heading_row = last_visitor_row + 4  # 3 spacer rows before heading
+        sheet.merge_cells(f'A{management_heading_row}:H{management_heading_row}')
         mgmt_heading_cell = sheet[f'A{management_heading_row}']
         mgmt_heading_cell.value = 'Management'
-        mgmt_heading_cell.font = Font(name='Calibri', size=13, bold=True, color='FFFFFF')
-        mgmt_heading_cell.alignment = Alignment(horizontal='left', vertical='center')
+        mgmt_heading_cell.font = Font(name='Calibri', size=12, bold=True, color='FFFFFF')
+        mgmt_heading_cell.alignment = Alignment(horizontal='left', vertical='center', indent=1)
         mgmt_heading_cell.fill = section_fill
-        sheet.row_dimensions[management_heading_row].height = 24
+        sheet.row_dimensions[management_heading_row].height = 20
 
-        table_start = management_heading_row + 2
-        headers = ['Staff ID', 'Name', 'Department', 'Position', 'Status', 'Added']
-        header_columns = [1, 4, 7, 10, 13, 15]
-        header_spans = [3, 3, 3, 3, 2, 2]
+        table_header_row = management_heading_row + 1
+        sheet.row_dimensions[table_header_row].height = 18
+        table_columns = [
+            (1, 2, 'Staff ID', 'staff_id'),
+            (3, 4, 'Name', 'name'),
+            (5, 6, 'Department', 'department'),
+            (7, 7, 'Position', 'position'),
+            (8, 8, 'Status', 'status'),
+        ]
 
-        for idx, label in enumerate(headers):
-            col = header_columns[idx]
-            span = header_spans[idx]
-            end_col = col + span - 1
+        for start_col, end_col, label, _ in table_columns:
             sheet.merge_cells(
-                f'{get_column_letter(col)}{table_start}:{get_column_letter(end_col)}{table_start}'
+                f"{get_column_letter(start_col)}{table_header_row}:{get_column_letter(end_col)}{table_header_row}"
             )
-            cell = sheet.cell(row=table_start, column=col)
-            cell.value = label
-            cell.font = Font(name='Calibri', size=10, bold=True, color='FFFFFF')
-            cell.alignment = Alignment(horizontal='center', vertical='center')
-            cell.fill = table_header_fill
-            for c in range(col, end_col + 1):
-                sheet.cell(row=table_start, column=c).border = card_border
+            header_cell = sheet.cell(row=table_header_row, column=start_col)
+            header_cell.value = label
+            header_cell.font = Font(name='Calibri', size=10, bold=True, color='FFFFFF')
+            header_cell.alignment = Alignment(horizontal='center', vertical='center')
+            header_cell.fill = visitor_header_fill
+            for col_idx in range(start_col, end_col + 1):
+                cell = sheet.cell(row=table_header_row, column=col_idx)
+                cell.fill = visitor_header_fill
+                cell.border = all_thin_border
 
-        table_row = table_start + 1
+        table_row = table_header_row + 1
         if management_payload:
-            for item in management_payload:
-                values = [
-                    item.get('staff_id', ''),
-                    item.get('name', ''),
-                    item.get('department', '-'),
-                    item.get('position', '-'),
-                    item.get('status', ''),
-                    item.get('created_at', ''),
-                ]
-                for idx, value in enumerate(values):
-                    col = header_columns[idx]
-                    span = header_spans[idx]
-                    end_col = col + span - 1
+            for row_idx, item in enumerate(management_payload):
+                sheet.row_dimensions[table_row].height = 22
+                row_fill = zebra_white_fill if (row_idx % 2 == 0) else zebra_alt_fill
+                for start_col, end_col, _, key in table_columns:
                     sheet.merge_cells(
-                        f'{get_column_letter(col)}{table_row}:{get_column_letter(end_col)}{table_row}'
+                        f"{get_column_letter(start_col)}{table_row}:{get_column_letter(end_col)}{table_row}"
                     )
-                    cell = sheet.cell(row=table_row, column=col)
+                    cell = sheet.cell(row=table_row, column=start_col)
+                    value = item.get(key, '-') or '-'
                     cell.value = value
-                    cell.font = Font(name='Calibri', size=10, color='0F172A')
-                    cell.alignment = Alignment(horizontal='left', vertical='center', wrap_text=True)
-                    if table_row % 2 == 0:
-                        cell.fill = zebra_fill
-                    for c in range(col, end_col + 1):
-                        sheet.cell(row=table_row, column=c).border = card_border
-                        if table_row % 2 == 0:
-                            sheet.cell(row=table_row, column=c).fill = zebra_fill
+                    cell.font = Font(name='Calibri', size=10, color='334155')
+                    cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+                    cell.fill = row_fill
+                    for col_idx in range(start_col, end_col + 1):
+                        child = sheet.cell(row=table_row, column=col_idx)
+                        child.fill = row_fill
+                        child.border = all_thin_border
 
-                status_col = header_columns[4]
-                status_cell = sheet.cell(row=table_row, column=status_col)
-                status_text = str(item.get('status', '')).strip().lower()
-                status_cell.alignment = Alignment(horizontal='center', vertical='center')
-                if status_text == 'active':
-                    status_cell.fill = status_active_fill
-                elif status_text == 'inactive':
-                    status_cell.fill = status_inactive_fill
+                    if key == 'status':
+                        status_text = str(value).strip().lower()
+                        status_fill = status_active_fill if status_text == 'active' else status_inactive_fill if status_text == 'inactive' else row_fill
+                        for col_idx in range(start_col, end_col + 1):
+                            sheet.cell(row=table_row, column=col_idx).fill = status_fill
                 table_row += 1
         else:
-            sheet.merge_cells(f'A{table_row}:P{table_row}')
-            cell = sheet[f'A{table_row}']
+            sheet.merge_cells(f"A{table_row}:H{table_row}")
+            cell = sheet.cell(row=table_row, column=1)
             cell.value = 'No staff data available for this event window.'
-            cell.font = Font(name='Calibri', size=10, italic=True, color='64748B')
+            cell.font = Font(name='Calibri', size=10, italic=True, color='334155')
             cell.alignment = Alignment(horizontal='left', vertical='center')
+            cell.fill = zebra_white_fill
+            for col_idx in range(1, 9):
+                sheet.cell(row=table_row, column=col_idx).border = all_thin_border
+            sheet.row_dimensions[table_row].height = 22
 
-        sheet.auto_filter.ref = f"A{table_start}:P{max(table_start, table_row - 1)}"
         sheet.freeze_panes = 'A6'
+        sheet.auto_filter.ref = 'A5:H5'
         workbook.save(filepath)
 
     def generate_pdf_report(self, start_date, end_date, report_type='daily', event_name=None, event_id=None):
