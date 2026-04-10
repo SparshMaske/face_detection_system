@@ -59,7 +59,7 @@ class EventLedController:
     States:
       READY       -> green blinking, red off
       RUNNING     -> green solid on, red off
-      COMPLETED   -> green solid on, red off
+      COMPLETED   -> green blinking, red off
       INTERRUPTED -> green off, red on
     """
 
@@ -79,7 +79,8 @@ class EventLedController:
         self._blink_flag = False
         self._monitor_thread = None
         self._stop_event = threading.Event()
-        self._state = 'READY'
+        # Start unset so the first computed state always applies LED outputs.
+        self._state = None
         self._gpio_ready = False
         self._GPIO = _NoopGPIO()
 
@@ -211,10 +212,10 @@ class EventLedController:
 
         if new_state == 'COMPLETED':
             try:
-                self._GPIO.output(self.green_pin, self._GPIO.HIGH)
                 self._GPIO.output(self.red_pin, self._GPIO.LOW)
             except Exception:
                 pass
+            self._start_blinking()
             return
 
         # INTERRUPTED fallback
@@ -240,8 +241,8 @@ class EventLedController:
 
         # Requested behavior:
         # - READY (wifi/ap on) => blink green
-        # - Event scheduled => constant green
-        # Keep active/completed as constant green.
+        # - Event scheduled/active => constant green
+        # - Event completed/over => blink green
         if workflow_active or status in ('scheduled', 'active'):
             return 'RUNNING'
         if status == 'completed':
