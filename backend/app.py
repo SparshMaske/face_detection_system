@@ -148,6 +148,13 @@ def create_app(config_class=Config):
     except Exception as exc:
         app.logger.warning("Could not start camera background worker on startup: %s", exc)
 
+    try:
+        from services.led_controller import start_led_monitor
+        with app.app_context():
+            start_led_monitor(app)
+    except Exception as exc:
+        app.logger.warning("Could not start LED monitor on startup: %s", exc)
+
     ensure_default_admin(app)
 
     # --- JWT Configuration ---
