@@ -108,8 +108,8 @@ def events_on_date():
         except Exception:
             start_dt = None
             end_dt = None
-        start_label = start_dt.strftime('%H:%M') if start_dt else '--:--'
-        end_label = end_dt.strftime('%H:%M') if end_dt else '--:--'
+        start_label = start_dt.strftime('%I:%M %p') if start_dt else '--:--'
+        end_label = end_dt.strftime('%I:%M %p') if end_dt else '--:--'
         events.append({
             'event_id': item.get('event_id'),
             'event_name': item.get('event_name') or 'Unnamed Event',

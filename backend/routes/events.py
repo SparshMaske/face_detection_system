@@ -1,6 +1,7 @@
 import json
 import os
-from datetime import datetime
+from datetime import date as date_cls
+from datetime import datetime, time as time_cls, timedelta, timezone
 from threading import Lock
 from typing import Dict, List, Optional, Tuple
 
@@ -38,11 +39,40 @@ def _make_event_id() -> str:
     return f"evt_{datetime.utcnow().strftime('%Y%m%d%H%M%S%f')}"
 
 
-def _parse_datetime(raw_value, field_name):
+def _parse_client_tz_offset_minutes(payload: Dict) -> Optional[int]:
+    raw = payload.get('client_tz_offset_minutes')
+    if raw is None or raw == '':
+        return None
+    try:
+        return int(raw)
+    except Exception:
+        return None
+
+
+def _normalize_to_server_local(local_naive_dt: datetime, client_tz_offset_minutes: Optional[int]) -> datetime:
+    """
+    Convert client-local naive datetime into server-local naive datetime.
+    JS getTimezoneOffset returns UTC - local, so IST => -330.
+    """
+    if client_tz_offset_minutes is None:
+        return local_naive_dt
+    try:
+        client_tz = timezone(timedelta(minutes=-int(client_tz_offset_minutes)))
+        aware_client = local_naive_dt.replace(tzinfo=client_tz)
+        server_local = aware_client.astimezone().replace(tzinfo=None)
+        return server_local
+    except Exception:
+        return local_naive_dt
+
+
+def _parse_datetime(raw_value, field_name, client_tz_offset_minutes: Optional[int] = None):
     if not raw_value:
         raise ValueError(f'{field_name} is required')
     try:
-        return datetime.fromisoformat(str(raw_value))
+        parsed = datetime.fromisoformat(str(raw_value))
+        if parsed.tzinfo is not None:
+            return parsed.astimezone().replace(tzinfo=None)
+        return _normalize_to_server_local(parsed, client_tz_offset_minutes)
     except ValueError as exc:
         raise ValueError(f'Invalid {field_name}. Use ISO datetime format') from exc
 
@@ -54,6 +84,86 @@ def _parse_datetime_optional(raw_value) -> Optional[datetime]:
         return datetime.fromisoformat(str(raw_value))
     except Exception:
         return None
+
+
+def _parse_date_value(raw_value, field_name) -> date_cls:
+    if not raw_value:
+        raise ValueError(f'{field_name} is required')
+    try:
+        return date_cls.fromisoformat(str(raw_value))
+    except Exception as exc:
+        raise ValueError(f'Invalid {field_name}. Use YYYY-MM-DD format') from exc
+
+
+def _parse_time_value(raw_value, field_name) -> time_cls:
+    if not raw_value:
+        raise ValueError(f'{field_name} is required')
+    text = str(raw_value).strip()
+    try:
+        if len(text) == 5:
+            return time_cls.fromisoformat(f"{text}:00")
+        return time_cls.fromisoformat(text)
+    except Exception as exc:
+        raise ValueError(f'Invalid {field_name}. Use HH:MM format') from exc
+
+
+def _parse_days_of_week(raw_days) -> List[int]:
+    if raw_days is None:
+        return [0, 1, 2, 3, 4, 5, 6]
+    if not isinstance(raw_days, list):
+        raise ValueError('days_of_week must be an array of weekday numbers (0-6, Sunday=0)')
+    parsed = []
+    for item in raw_days:
+        try:
+            day = int(item)
+        except Exception:
+            continue
+        if 0 <= day <= 6:
+            parsed.append(day)
+    parsed = sorted(set(parsed))
+    if not parsed:
+        raise ValueError('days_of_week cannot be empty for range/daytime scheduling')
+    return parsed
+
+
+def _build_daytime_windows(payload: Dict, client_tz_offset_minutes: Optional[int]) -> List[Tuple[datetime, datetime]]:
+    range_start_date = _parse_date_value(payload.get('range_start_date'), 'range_start_date')
+    range_end_date = _parse_date_value(payload.get('range_end_date'), 'range_end_date')
+    if range_end_date < range_start_date:
+        raise ValueError('range_end_date must be on or after range_start_date')
+
+    day_start_time = _parse_time_value(payload.get('day_start_time'), 'day_start_time')
+    day_end_time = _parse_time_value(payload.get('day_end_time'), 'day_end_time')
+    if day_end_time <= day_start_time:
+        raise ValueError('day_end_time must be after day_start_time for daytime scheduling')
+    repeat_every_days = int(payload.get('repeat_every_days') or 1)
+    if repeat_every_days < 1 or repeat_every_days > 30:
+        raise ValueError('repeat_every_days must be between 1 and 30')
+
+    days_of_week = _parse_days_of_week(payload.get('days_of_week'))
+    windows: List[Tuple[datetime, datetime]] = []
+    cursor_date = range_start_date
+    total_days = (range_end_date - range_start_date).days
+    for day_offset in range(total_days + 1):
+        candidate_date = cursor_date + timedelta(days=day_offset)
+        js_weekday = (candidate_date.weekday() + 1) % 7  # python Monday=0 -> JS Sunday=0
+        if js_weekday not in days_of_week:
+            continue
+        if day_offset % repeat_every_days != 0:
+            continue
+
+        start_dt_local = datetime.combine(candidate_date, day_start_time)
+        end_dt_local = datetime.combine(candidate_date, day_end_time)
+
+        start_dt = _normalize_to_server_local(start_dt_local, client_tz_offset_minutes)
+        end_dt = _normalize_to_server_local(end_dt_local, client_tz_offset_minutes)
+        if end_dt <= start_dt:
+            continue
+        windows.append((start_dt, end_dt))
+
+    if not windows:
+        raise ValueError('No valid event windows were generated for this range/filter.')
+    return windows
 
 
 def _safe_token(raw_value: str) -> str:
@@ -422,8 +532,50 @@ def _activate_camera(camera):
     db.session.commit()
 
 
+def _pick_default_camera() -> Optional[Camera]:
+    cams = Camera.query.all()
+    if not cams:
+        return None
+
+    def _score(cam: Camera) -> Tuple[int, int]:
+        camera_id = str(cam.camera_id or '').strip().lower()
+        name = str(cam.name or '').strip().lower()
+        location = str(cam.location or '').strip().lower()
+        ctype = str(cam.camera_type or '').strip().lower()
+        hay = f"{camera_id} {name} {location} {ctype}"
+
+        # browser/client cameras are last-resort fallback.
+        if ctype == 'browser' or camera_id == 'event_default':
+            return (0, 0)
+
+        score = 10
+        if cam.is_active:
+            score += 6
+        if ctype in ('webcam', 'usb', 'default'):
+            score += 8
+        if ctype == 'rtsp':
+            score += 5
+        if any(token in hay for token in ('rasp', 'rpi', 'picam', 'csi', 'wired')):
+            score += 18
+        if any(token in hay for token in ('usb', 'webcam', 'logitech', 'camera')):
+            score += 7
+        if camera_id in ('raspberry_camera', 'rpi_camera', 'picam', 'cam001'):
+            score += 10
+
+        # stable ordering fallback
+        return (score, -int(cam.id or 0))
+
+    ranked = sorted(cams, key=_score, reverse=True)
+    return ranked[0] if ranked else None
+
+
 def _resolve_camera(camera_mode, rtsp_url=None, existing_camera_id=None):
     if camera_mode == 'default':
+        preferred = _pick_default_camera()
+        if preferred and str(preferred.camera_type or '').lower() != 'browser':
+            _activate_camera(preferred)
+            return preferred, None
+
         camera = Camera.query.filter_by(camera_id='EVENT_DEFAULT').first()
         if not camera:
             camera = Camera(
@@ -558,20 +710,37 @@ def get_current_event():
 def schedule_event():
     payload = request.get_json() or {}
     event_name = (payload.get('event_name') or '').strip()
+    schedule_mode = str(payload.get('schedule_mode') or 'single').strip().lower()
     camera_mode = payload.get('camera_mode')
     rtsp_url = (payload.get('rtsp_url') or '').strip()
     existing_camera_id = payload.get('camera_id')
+    client_tz_offset_minutes = _parse_client_tz_offset_minutes(payload)
 
     if not event_name:
         return jsonify({'error': 'event_name is required'}), 400
 
     try:
-        start_time = _parse_datetime(payload.get('start_time'), 'start_time')
-        end_time = _parse_datetime(payload.get('end_time'), 'end_time')
+        if schedule_mode == 'single':
+            start_time = _parse_datetime(
+                payload.get('start_time'),
+                'start_time',
+                client_tz_offset_minutes=client_tz_offset_minutes,
+            )
+            end_time = _parse_datetime(
+                payload.get('end_time'),
+                'end_time',
+                client_tz_offset_minutes=client_tz_offset_minutes,
+            )
+            windows_to_create = [(start_time, end_time)]
+        elif schedule_mode in ('daytime_window', 'daily_window', 'multi_day'):
+            windows_to_create = _build_daytime_windows(payload, client_tz_offset_minutes)
+            start_time, end_time = windows_to_create[0]
+        else:
+            return jsonify({'error': "schedule_mode must be 'single' or 'daytime_window'"}), 400
     except ValueError as exc:
         return jsonify({'error': str(exc)}), 400
 
-    if end_time <= start_time:
+    if any(end <= start for start, end in windows_to_create):
         return jsonify({'error': 'end_time must be after start_time'}), 400
 
     with _EVENT_LOCK:
@@ -587,11 +756,12 @@ def schedule_event():
             existing_start, existing_end = _record_window(existing)
             if not existing_start or not existing_end:
                 continue
-            if _windows_overlap(start_time, end_time, existing_start, existing_end):
-                conflict_name = (existing.get('event_name') or '').strip() or existing.get('event_id') or 'another event'
-                return jsonify({
-                    'error': f"Event '{conflict_name}' is already scheduled in this time window."
-                }), 409
+            for start_time, end_time in windows_to_create:
+                if _windows_overlap(start_time, end_time, existing_start, existing_end):
+                    conflict_name = (existing.get('event_name') or '').strip() or existing.get('event_id') or 'another event'
+                    return jsonify({
+                        'error': f"Event '{conflict_name}' is already scheduled in this time window."
+                    }), 409
 
         camera, camera_error = _resolve_camera(
             camera_mode,
@@ -602,39 +772,45 @@ def schedule_event():
             return jsonify({'error': camera_error}), 400
 
         now = _now()
-        event_id = _make_event_id()
-        record = {
-            'event_id': event_id,
-            'event_name': event_name,
-            'start_time': start_time.isoformat(),
-            'end_time': end_time.isoformat(),
-            'camera_mode': camera_mode,
-            'selected_camera_id': camera.camera_id if camera else None,
-            'rtsp_url': rtsp_url if camera_mode == 'rtsp' else None,
-            'status': 'scheduled',
-            'manual_stop': False,
-            'created_at': now.isoformat(),
-            'updated_at': now.isoformat(),
-            'completed_at': None,
-        }
-        records.append(record)
+        created_records = []
+        for start_time, end_time in windows_to_create:
+            event_id = _make_event_id()
+            record = {
+                'event_id': event_id,
+                'event_name': event_name,
+                'start_time': start_time.isoformat(),
+                'end_time': end_time.isoformat(),
+                'camera_mode': camera_mode,
+                'selected_camera_id': camera.camera_id if camera else None,
+                'rtsp_url': rtsp_url if camera_mode == 'rtsp' else None,
+                'status': 'scheduled',
+                'manual_stop': False,
+                'created_at': now.isoformat(),
+                'updated_at': now.isoformat(),
+                'completed_at': None,
+            }
+            records.append(record)
+            created_records.append(record)
+
+            _append_event_history({
+                'event_id': event_id,
+                'event_name': event_name,
+                'start_time': start_time.isoformat(),
+                'end_time': end_time.isoformat(),
+                'camera_mode': camera_mode,
+                'selected_camera_id': camera.camera_id if camera else None,
+                'rtsp_url': rtsp_url if camera_mode == 'rtsp' else None,
+                'status': 'scheduled',
+                'created_at': now.isoformat(),
+            })
+
         records.sort(key=lambda rec: (rec.get('start_time') or '', rec.get('created_at') or ''))
         _save_event_registry(records)
-
-        _append_event_history({
-            'event_id': event_id,
-            'event_name': event_name,
-            'start_time': start_time.isoformat(),
-            'end_time': end_time.isoformat(),
-            'camera_mode': camera_mode,
-            'selected_camera_id': camera.camera_id if camera else None,
-            'rtsp_url': rtsp_url if camera_mode == 'rtsp' else None,
-            'status': 'scheduled',
-            'created_at': now.isoformat(),
-        })
-
-        _apply_state_from_record(record, status='scheduled', workflow_active=False)
-        return jsonify(_serialize_state())
+        _sync_state_with_time()
+        response = _serialize_state()
+        response['created_count'] = len(created_records)
+        response['schedule_mode'] = schedule_mode
+        return jsonify(response)
 
 
 @events_bp.route('/start', methods=['POST'])

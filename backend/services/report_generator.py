@@ -125,7 +125,7 @@ class ReportGenerator:
                 'department': staff.department or '-',
                 'position': staff.position or '-',
                 'status': 'Active' if staff.is_active else 'Inactive',
-                'created_at': staff.created_at.strftime('%Y-%m-%d %H:%M:%S') if staff.created_at else '',
+                'created_at': staff.created_at.strftime('%Y-%m-%d %I:%M:%S %p') if staff.created_at else '',
             })
         return rows
 
@@ -695,12 +695,13 @@ class ReportGenerator:
             text = str(value or '').strip()
             if not text or text == '-':
                 return '-'
-            for fmt in ('%Y-%m-%d %H:%M:%S', '%Y-%m-%dT%H:%M:%S'):
-                try:
-                    dt = datetime.strptime(text[:19], fmt)
-                    return dt.strftime('%Y-%m-%d %H:%M')
-                except Exception:
-                    continue
+            for candidate in (text, text[:22], text[:19], text.replace('T', ' ')):
+                for fmt in ('%Y-%m-%d %I:%M:%S %p', '%Y-%m-%d %H:%M:%S', '%Y-%m-%dT%H:%M:%S'):
+                    try:
+                        dt = datetime.strptime(candidate, fmt)
+                        return dt.strftime('%Y-%m-%d %I:%M %p')
+                    except Exception:
+                        continue
             return text[:16]
 
         if not visitors_payload:
@@ -819,8 +820,8 @@ class ReportGenerator:
 
         summary_table = Table([
             ['Date', capture_date_text],
-            ['First In Time', first_in.strftime('%Y-%m-%d %H:%M:%S')],
-            ['Last Out Time', last_out.strftime('%Y-%m-%d %H:%M:%S')],
+            ['First In Time', first_in.strftime('%Y-%m-%d %I:%M:%S %p')],
+            ['Last Out Time', last_out.strftime('%Y-%m-%d %I:%M:%S %p')],
             ['Total Duration', duration_text],
         ], colWidths=[150, 280])
         summary_table.setStyle(TableStyle([
@@ -858,8 +859,8 @@ class ReportGenerator:
         pdf.set_font('Arial', 'B', 10)
         summary_rows = [
             ('Date', capture_date_text),
-            ('First In Time', first_in.strftime('%Y-%m-%d %H:%M:%S')),
-            ('Last Out Time', last_out.strftime('%Y-%m-%d %H:%M:%S')),
+            ('First In Time', first_in.strftime('%Y-%m-%d %I:%M:%S %p')),
+            ('Last Out Time', last_out.strftime('%Y-%m-%d %I:%M:%S %p')),
             ('Total Duration', duration_text),
         ]
         for key, value in summary_rows:
@@ -935,8 +936,8 @@ class ReportGenerator:
                 visitors_payload.append({
                     'visitor_id': visitor_code,
                     'date': first_in.strftime('%Y-%m-%d') if first_in else '-',
-                    'first_in': first_in.strftime('%Y-%m-%d %H:%M:%S') if first_in else '-',
-                    'last_out': last_out.strftime('%Y-%m-%d %H:%M:%S') if last_out else '-',
+                    'first_in': first_in.strftime('%Y-%m-%d %I:%M:%S %p') if first_in else '-',
+                    'last_out': last_out.strftime('%Y-%m-%d %I:%M:%S %p') if last_out else '-',
                     'duration': self._format_duration(duration_seconds),
                     'snapshot_path': snapshot_path,
                 })

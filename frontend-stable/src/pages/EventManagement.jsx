@@ -5,12 +5,10 @@ import {
   downloadCompletedEventExcel,
   getEventManagement,
 } from '../services/eventService';
+import { formatDateTime12h } from '../utils/formatters';
 
 function fmtDateTime(value) {
-  if (!value) return 'N/A';
-  const dt = new Date(value);
-  if (Number.isNaN(dt.getTime())) return 'N/A';
-  return dt.toLocaleString();
+  return formatDateTime12h(value, 'N/A');
 }
 
 function fmtWindow(eventItem) {

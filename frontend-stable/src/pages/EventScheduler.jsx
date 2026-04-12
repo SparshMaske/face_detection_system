@@ -3,31 +3,57 @@ import { useNavigate } from 'react-router-dom';
 import Card from '../components/Card';
 import api from '../services/api';
 import { getCurrentEvent, scheduleEvent, startEvent, stopEvent } from '../services/eventService';
+import {
+  formatDateTime12h,
+  localDateInputValue,
+  localTimeInputValue,
+  toDateTimeLocalInput,
+} from '../utils/formatters';
 
-function toDateTimeLocal(value) {
-  if (!value) return '';
-  const dt = new Date(value);
-  if (Number.isNaN(dt.getTime())) return '';
-  const yyyy = dt.getFullYear();
-  const mm = String(dt.getMonth() + 1).padStart(2, '0');
-  const dd = String(dt.getDate()).padStart(2, '0');
-  const hh = String(dt.getHours()).padStart(2, '0');
-  const mi = String(dt.getMinutes()).padStart(2, '0');
-  return `${yyyy}-${mm}-${dd}T${hh}:${mi}`;
-}
+const DAY_OPTIONS = [
+  { value: 0, label: 'Sun' },
+  { value: 1, label: 'Mon' },
+  { value: 2, label: 'Tue' },
+  { value: 3, label: 'Wed' },
+  { value: 4, label: 'Thu' },
+  { value: 5, label: 'Fri' },
+  { value: 6, label: 'Sat' },
+];
 
 function defaultStart() {
   const now = new Date();
   now.setMinutes(now.getMinutes() + 1);
   now.setSeconds(0, 0);
-  return toDateTimeLocal(now.toISOString());
+  return toDateTimeLocalInput(now);
 }
 
 function defaultEnd() {
   const end = new Date();
   end.setHours(end.getHours() + 1);
   end.setSeconds(0, 0);
-  return toDateTimeLocal(end.toISOString());
+  return toDateTimeLocalInput(end);
+}
+
+function defaultRangeStart() {
+  return localDateInputValue(new Date());
+}
+
+function defaultRangeEnd() {
+  const end = new Date();
+  end.setDate(end.getDate() + 9);
+  return localDateInputValue(end);
+}
+
+function defaultDayStart() {
+  const now = new Date();
+  now.setHours(9, 0, 0, 0);
+  return localTimeInputValue(now);
+}
+
+function defaultDayEnd() {
+  const now = new Date();
+  now.setHours(18, 0, 0, 0);
+  return localTimeInputValue(now);
 }
 
 export default function EventScheduler() {
@@ -36,11 +62,20 @@ export default function EventScheduler() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+  const [notice, setNotice] = useState('');
   const [eventState, setEventState] = useState(null);
   const [form, setForm] = useState({
     event_name: '',
+    schedule_mode: 'single',
     start_time: defaultStart(),
     end_time: defaultEnd(),
+    range_start_date: defaultRangeStart(),
+    range_end_date: defaultRangeEnd(),
+    day_start_time: defaultDayStart(),
+    day_end_time: defaultDayEnd(),
+    day_selection: 'weekdays',
+    custom_days: [1, 2, 3, 4, 5],
+    repeat_every_days: 1,
     camera_mode: 'default',
     rtsp_url: '',
     camera_id: '',
@@ -54,6 +89,7 @@ export default function EventScheduler() {
     const bootstrap = async () => {
       try {
         setError('');
+        setNotice('');
         const [cameraRes, eventRes] = await Promise.allSettled([
           api.get('/camera/'),
           getCurrentEvent(),
@@ -70,8 +106,9 @@ export default function EventScheduler() {
           setForm((prev) => ({
             ...prev,
             event_name: currentEvent.event_name || prev.event_name,
-            start_time: toDateTimeLocal(currentEvent.start_time) || prev.start_time,
-            end_time: toDateTimeLocal(currentEvent.end_time) || prev.end_time,
+            schedule_mode: 'single',
+            start_time: toDateTimeLocalInput(currentEvent.start_time) || prev.start_time,
+            end_time: toDateTimeLocalInput(currentEvent.end_time) || prev.end_time,
             camera_mode: currentEvent.camera_mode || prev.camera_mode,
             camera_id: currentEvent.selected_camera_id || prev.camera_id,
             rtsp_url: currentEvent.rtsp_url || prev.rtsp_url,
@@ -81,16 +118,12 @@ export default function EventScheduler() {
         }
 
         const errorMessages = [];
-        if (cameraRes.status === 'rejected') {
-          errorMessages.push('camera list');
-        }
-        if (eventRes.status === 'rejected') {
-          errorMessages.push('event status');
-        }
+        if (cameraRes.status === 'rejected') errorMessages.push('camera list');
+        if (eventRes.status === 'rejected') errorMessages.push('event status');
         if (errorMessages.length > 0) {
           setError(`Failed to load ${errorMessages.join(' and ')}. Check backend/API token.`);
         }
-      } catch (err) {
+      } catch (_) {
         if (!mounted) return;
         setError('Failed to initialize event scheduler.');
       } finally {
@@ -109,11 +142,9 @@ export default function EventScheduler() {
         const res = await getCurrentEvent();
         const data = res.data || {};
         setEventState(data);
-        if (data.status === 'active') {
-          navigate('/live', { replace: true });
-        }
+        if (data.status === 'active') navigate('/live', { replace: true });
       } catch (_) {
-        // Keep polling silent to avoid disruptive alerts.
+        // silent poll
       }
     }, 5000);
     return () => clearInterval(timer);
@@ -121,13 +152,28 @@ export default function EventScheduler() {
 
   const eventWindowLabel = useMemo(() => {
     if (!eventState?.start_time || !eventState?.end_time) return '';
-    const start = new Date(eventState.start_time).toLocaleString();
-    const end = new Date(eventState.end_time).toLocaleString();
-    return `${start} - ${end}`;
+    return `${formatDateTime12h(eventState.start_time)} - ${formatDateTime12h(eventState.end_time)}`;
   }, [eventState]);
 
   const handleChange = (key, value) => {
     setForm((prev) => ({ ...prev, [key]: value }));
+  };
+
+  const toggleCustomDay = (dayValue) => {
+    setForm((prev) => {
+      const current = new Set(prev.custom_days || []);
+      if (current.has(dayValue)) current.delete(dayValue);
+      else current.add(dayValue);
+      return { ...prev, custom_days: Array.from(current).sort((a, b) => a - b) };
+    });
+  };
+
+  const getSelectedDays = () => {
+    const daySelection = form.day_selection;
+    if (daySelection === 'everyday') return [0, 1, 2, 3, 4, 5, 6];
+    if (daySelection === 'weekdays') return [1, 2, 3, 4, 5];
+    if (daySelection === 'weekends') return [0, 6];
+    return (form.custom_days || []).slice().sort((a, b) => a - b);
   };
 
   const handleSubmit = async (e) => {
@@ -135,17 +181,41 @@ export default function EventScheduler() {
     try {
       setSaving(true);
       setError('');
+      setNotice('');
+
+      const tzName = Intl.DateTimeFormat().resolvedOptions().timeZone || '';
+      const tzOffsetMin = new Date().getTimezoneOffset();
       const payload = {
         event_name: form.event_name.trim(),
-        start_time: form.start_time,
-        end_time: form.end_time,
         camera_mode: form.camera_mode,
+        schedule_mode: form.schedule_mode,
+        client_tz_offset_minutes: tzOffsetMin,
+        client_timezone: tzName,
+        client_now_iso: new Date().toISOString(),
       };
+
+      if (form.schedule_mode === 'single') {
+        payload.start_time = form.start_time;
+        payload.end_time = form.end_time;
+      } else {
+        const selectedDays = getSelectedDays();
+        payload.range_start_date = form.range_start_date;
+        payload.range_end_date = form.range_end_date;
+        payload.day_start_time = form.day_start_time;
+        payload.day_end_time = form.day_end_time;
+        payload.days_of_week = selectedDays;
+        payload.repeat_every_days = Number(form.repeat_every_days || 1);
+      }
+
       if (form.camera_mode === 'rtsp') payload.rtsp_url = form.rtsp_url.trim();
       if (form.camera_mode === 'existing') payload.camera_id = form.camera_id;
+
       const res = await scheduleEvent(payload);
       setEventState(res.data || null);
       if (res.data?.status === 'active') navigate('/live', { replace: true });
+      if (res?.data?.created_count > 1) {
+        setNotice(`Scheduled ${res.data.created_count} event windows successfully.`);
+      }
     } catch (err) {
       setError(err?.response?.data?.error || 'Failed to schedule event');
     } finally {
@@ -156,6 +226,7 @@ export default function EventScheduler() {
   const handleStartNow = async () => {
     try {
       setError('');
+      setNotice('');
       const res = await startEvent();
       setEventState(res.data || null);
       navigate('/live', { replace: true });
@@ -167,6 +238,7 @@ export default function EventScheduler() {
   const handleStop = async () => {
     try {
       setError('');
+      setNotice('');
       const res = await stopEvent();
       setEventState(res.data || null);
     } catch (err) {
@@ -192,28 +264,132 @@ export default function EventScheduler() {
             />
           </div>
 
-          <div className="event-grid-two">
-            <div className="w-full">
-              <label className="block text-sm font-medium mb-1">Start Time</label>
-              <input
-                type="datetime-local"
-                className="input"
-                value={form.start_time}
-                onChange={(e) => handleChange('start_time', e.target.value)}
-                required
-              />
-            </div>
-            <div className="w-full">
-              <label className="block text-sm font-medium mb-1">End Time</label>
-              <input
-                type="datetime-local"
-                className="input"
-                value={form.end_time}
-                onChange={(e) => handleChange('end_time', e.target.value)}
-                required
-              />
-            </div>
+          <div>
+            <label className="block text-sm font-medium mb-2">Schedule Pattern</label>
+            <select
+              className="input"
+              value={form.schedule_mode}
+              onChange={(e) => handleChange('schedule_mode', e.target.value)}
+            >
+              <option value="single">One-Time Event</option>
+              <option value="daytime_window">Date Range + Daytime Window</option>
+            </select>
           </div>
+
+          {form.schedule_mode === 'single' ? (
+            <div className="event-grid-two">
+              <div className="w-full">
+                <label className="block text-sm font-medium mb-1">Start Time</label>
+                <input
+                  type="datetime-local"
+                  className="input"
+                  value={form.start_time}
+                  onChange={(e) => handleChange('start_time', e.target.value)}
+                  required
+                />
+              </div>
+              <div className="w-full">
+                <label className="block text-sm font-medium mb-1">End Time</label>
+                <input
+                  type="datetime-local"
+                  className="input"
+                  value={form.end_time}
+                  onChange={(e) => handleChange('end_time', e.target.value)}
+                  required
+                />
+              </div>
+            </div>
+          ) : (
+            <div className="space-y-4 rounded-lg border border-[var(--border)] p-3">
+              <div className="event-grid-two">
+                <div>
+                  <label className="block text-sm font-medium mb-1">Range Start Date</label>
+                  <input
+                    type="date"
+                    className="input"
+                    value={form.range_start_date}
+                    onChange={(e) => handleChange('range_start_date', e.target.value)}
+                    required
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium mb-1">Range End Date</label>
+                  <input
+                    type="date"
+                    className="input"
+                    value={form.range_end_date}
+                    onChange={(e) => handleChange('range_end_date', e.target.value)}
+                    required
+                  />
+                </div>
+              </div>
+              <div className="event-grid-two">
+                <div>
+                  <label className="block text-sm font-medium mb-1">Daily Start Time</label>
+                  <input
+                    type="time"
+                    className="input"
+                    value={form.day_start_time}
+                    onChange={(e) => handleChange('day_start_time', e.target.value)}
+                    required
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium mb-1">Daily End Time</label>
+                  <input
+                    type="time"
+                    className="input"
+                    value={form.day_end_time}
+                    onChange={(e) => handleChange('day_end_time', e.target.value)}
+                    required
+                  />
+                </div>
+              </div>
+              <div className="event-grid-two">
+                <div>
+                  <label className="block text-sm font-medium mb-1">Day Filter</label>
+                  <select
+                    className="input"
+                    value={form.day_selection}
+                    onChange={(e) => handleChange('day_selection', e.target.value)}
+                  >
+                    <option value="everyday">Every day</option>
+                    <option value="weekdays">Weekdays</option>
+                    <option value="weekends">Weekends</option>
+                    <option value="custom">Custom</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium mb-1">Repeat Every (days)</label>
+                  <input
+                    type="number"
+                    min="1"
+                    max="30"
+                    className="input"
+                    value={form.repeat_every_days}
+                    onChange={(e) => handleChange('repeat_every_days', e.target.value)}
+                  />
+                </div>
+              </div>
+              {form.day_selection === 'custom' && (
+                <div>
+                  <label className="block text-sm font-medium mb-1">Custom Days</label>
+                  <div className="flex flex-wrap gap-3">
+                    {DAY_OPTIONS.map((opt) => (
+                      <label key={opt.value} className="flex items-center gap-2 text-sm">
+                        <input
+                          type="checkbox"
+                          checked={(form.custom_days || []).includes(opt.value)}
+                          onChange={() => toggleCustomDay(opt.value)}
+                        />
+                        <span>{opt.label}</span>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
 
           <div>
             <label className="block text-sm font-medium mb-2">Camera Source</label>
@@ -225,7 +401,7 @@ export default function EventScheduler() {
                   checked={form.camera_mode === 'default'}
                   onChange={() => handleChange('camera_mode', 'default')}
                 />
-                <span>Default Device Camera (Current Device)</span>
+                <span>Default Camera (Auto Raspberry/Existing camera, fallback device camera)</span>
               </label>
               <label className="flex items-center gap-2">
                 <input
@@ -273,6 +449,7 @@ export default function EventScheduler() {
           </div>
 
           {error && <div className="text-red-600 text-sm">{error}</div>}
+          {!error && notice && <div className="text-green-600 text-sm">{notice}</div>}
 
           <div className="event-actions">
             <button type="submit" className="btn btn-primary" disabled={saving}>

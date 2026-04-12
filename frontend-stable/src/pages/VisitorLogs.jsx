@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { getVisitors } from '../services/visitorService';
 import Card from '../components/Card';
+import { formatDateOnly, formatDateTime12h } from '../utils/formatters';
 
 export default function VisitorLogs() {
   const [visitors, setVisitors] = useState([]);
@@ -46,8 +47,8 @@ export default function VisitorLogs() {
               {visitors.map(v => (
                 <tr key={v.id}>
                   <td>{v.event_display_id || v.visitor_id}</td>
-                  <td>{new Date(v.first_seen).toLocaleDateString()}</td>
-                  <td>{new Date(v.last_seen).toLocaleString()}</td>
+                  <td>{formatDateOnly(v.first_seen, '-')}</td>
+                  <td>{formatDateTime12h(v.last_seen, '-')}</td>
                   <td>{v.event_duration_formatted || '-'}</td>
                   <td>{v.visit_count}</td>
                   <td>

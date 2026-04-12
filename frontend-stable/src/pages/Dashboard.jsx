@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { getStats, getRecentActivity } from '../services/dashboardService';
 import Card from '../components/Card';
+import { formatDateTime12h } from '../utils/formatters';
 
 export default function Dashboard() {
   const [stats, setStats] = useState({});
@@ -71,8 +72,8 @@ export default function Dashboard() {
               {activity.map((act) => (
                 <tr key={act.id}>
                   <td>{act.visitor_id}</td>
-                  <td>{new Date(act.entry_time).toLocaleString()}</td>
-                  <td>{act.exit_time ? new Date(act.exit_time).toLocaleString() : '-'}</td>
+                  <td>{formatDateTime12h(act.entry_time, '-')}</td>
+                  <td>{act.exit_time ? formatDateTime12h(act.exit_time, '-') : '-'}</td>
                   <td>
                     <span className={`badge ${act.is_active ? 'badge-green' : 'badge-red'}`}>
                       {act.is_active ? 'Active' : 'Left'}

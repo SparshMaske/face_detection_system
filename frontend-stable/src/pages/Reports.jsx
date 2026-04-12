@@ -1,10 +1,11 @@
 import { useEffect, useState } from 'react';
 import { generateReport, getEventsOnDate } from '../services/reportService';
 import Card from '../components/Card';
+import { localDateInputValue } from '../utils/formatters';
 
 export default function Reports() {
   const [form, setForm] = useState({
-    date: new Date().toISOString().split('T')[0],
+    date: localDateInputValue(new Date()),
     event_id: '',
     event_name: '',
     report_type: 'daily',
