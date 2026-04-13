@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import Card from '../components/Card';
 import api from '../services/api';
@@ -87,6 +87,54 @@ function fromIsoDateTimeToDisplay(value) {
   return formatDateTimeInput(dt);
 }
 
+function toLocalDateTimeValue(displayValue) {
+  return parseDateTimeInputToIso(displayValue) || '';
+}
+
+function fromLocalDateTimeValue(localValue) {
+  if (!localValue) return '';
+  const dt = new Date(localValue);
+  if (Number.isNaN(dt.getTime())) return '';
+  return formatDateTimeInput(dt);
+}
+
+function fromLocalDateValue(localValue) {
+  if (!localValue) return '';
+  const [yyyy, mm, dd] = String(localValue).split('-');
+  if (!yyyy || !mm || !dd) return '';
+  return `${dd}/${mm}/${yyyy}`;
+}
+
+function toLocalDateValue(displayValue) {
+  return parseDateInputToIso(displayValue) || '';
+}
+
+function fromLocalTimeValue(localValue) {
+  const text = String(localValue || '').trim();
+  const match = text.match(/^(\d{1,2}):(\d{2})$/);
+  if (!match) return '';
+  const hh = Number.parseInt(match[1], 10);
+  const mm = Number.parseInt(match[2], 10);
+  const dt = new Date();
+  dt.setHours(hh, mm, 0, 0);
+  return formatTimeInput(dt);
+}
+
+function openNativePicker(inputRef) {
+  const el = inputRef?.current;
+  if (!el) return;
+  try {
+    if (typeof el.showPicker === 'function') {
+      el.showPicker();
+      return;
+    }
+  } catch (_) {
+    // fallback to focus/click for browsers without showPicker
+  }
+  try { el.focus(); } catch (_) {}
+  try { el.click(); } catch (_) {}
+}
+
 function defaultStart() {
   const now = new Date();
   now.setMinutes(now.getMinutes() + 1);
@@ -125,6 +173,12 @@ function defaultDayEnd() {
 
 export default function EventScheduler() {
   const navigate = useNavigate();
+  const singleStartPickerRef = useRef(null);
+  const singleEndPickerRef = useRef(null);
+  const rangeStartPickerRef = useRef(null);
+  const rangeEndPickerRef = useRef(null);
+  const dayStartPickerRef = useRef(null);
+  const dayEndPickerRef = useRef(null);
   const [cameras, setCameras] = useState([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -368,25 +422,57 @@ export default function EventScheduler() {
             <div className="event-grid-two">
               <div className="w-full">
                 <label className="block text-sm font-medium mb-1">Start Time</label>
-                <input
-                  type="text"
-                  className="input"
-                  placeholder="DD/MM/YYYY, hh:mm AM/PM"
-                  value={form.start_time}
-                  onChange={(e) => handleChange('start_time', e.target.value)}
-                  required
-                />
+                <div className="picker-input-group">
+                  <input
+                    type="text"
+                    className="input"
+                    placeholder="DD/MM/YYYY, hh:mm AM/PM"
+                    value={form.start_time}
+                    readOnly
+                    onClick={() => openNativePicker(singleStartPickerRef)}
+                    required
+                  />
+                  <button type="button" className="btn btn-secondary picker-input-btn" onClick={() => openNativePicker(singleStartPickerRef)}>
+                    Pick
+                  </button>
+                  <input
+                    ref={singleStartPickerRef}
+                    type="datetime-local"
+                    className="native-picker-input"
+                    value={toLocalDateTimeValue(form.start_time)}
+                    onChange={(e) => {
+                      const textValue = fromLocalDateTimeValue(e.target.value);
+                      if (textValue) handleChange('start_time', textValue);
+                    }}
+                  />
+                </div>
               </div>
               <div className="w-full">
                 <label className="block text-sm font-medium mb-1">End Time</label>
-                <input
-                  type="text"
-                  className="input"
-                  placeholder="DD/MM/YYYY, hh:mm AM/PM"
-                  value={form.end_time}
-                  onChange={(e) => handleChange('end_time', e.target.value)}
-                  required
-                />
+                <div className="picker-input-group">
+                  <input
+                    type="text"
+                    className="input"
+                    placeholder="DD/MM/YYYY, hh:mm AM/PM"
+                    value={form.end_time}
+                    readOnly
+                    onClick={() => openNativePicker(singleEndPickerRef)}
+                    required
+                  />
+                  <button type="button" className="btn btn-secondary picker-input-btn" onClick={() => openNativePicker(singleEndPickerRef)}>
+                    Pick
+                  </button>
+                  <input
+                    ref={singleEndPickerRef}
+                    type="datetime-local"
+                    className="native-picker-input"
+                    value={toLocalDateTimeValue(form.end_time)}
+                    onChange={(e) => {
+                      const textValue = fromLocalDateTimeValue(e.target.value);
+                      if (textValue) handleChange('end_time', textValue);
+                    }}
+                  />
+                </div>
               </div>
             </div>
           ) : (
@@ -394,49 +480,113 @@ export default function EventScheduler() {
               <div className="event-grid-two">
                 <div>
                   <label className="block text-sm font-medium mb-1">Range Start Date</label>
-                  <input
-                    type="text"
-                    className="input"
-                    placeholder="DD/MM/YYYY"
-                    value={form.range_start_date}
-                    onChange={(e) => handleChange('range_start_date', e.target.value)}
-                    required
-                  />
+                  <div className="picker-input-group">
+                    <input
+                      type="text"
+                      className="input"
+                      placeholder="DD/MM/YYYY"
+                      value={form.range_start_date}
+                      readOnly
+                      onClick={() => openNativePicker(rangeStartPickerRef)}
+                      required
+                    />
+                    <button type="button" className="btn btn-secondary picker-input-btn" onClick={() => openNativePicker(rangeStartPickerRef)}>
+                      Pick
+                    </button>
+                    <input
+                      ref={rangeStartPickerRef}
+                      type="date"
+                      className="native-picker-input"
+                      value={toLocalDateValue(form.range_start_date)}
+                      onChange={(e) => {
+                        const textValue = fromLocalDateValue(e.target.value);
+                        if (textValue) handleChange('range_start_date', textValue);
+                      }}
+                    />
+                  </div>
                 </div>
                 <div>
                   <label className="block text-sm font-medium mb-1">Range End Date</label>
-                  <input
-                    type="text"
-                    className="input"
-                    placeholder="DD/MM/YYYY"
-                    value={form.range_end_date}
-                    onChange={(e) => handleChange('range_end_date', e.target.value)}
-                    required
-                  />
+                  <div className="picker-input-group">
+                    <input
+                      type="text"
+                      className="input"
+                      placeholder="DD/MM/YYYY"
+                      value={form.range_end_date}
+                      readOnly
+                      onClick={() => openNativePicker(rangeEndPickerRef)}
+                      required
+                    />
+                    <button type="button" className="btn btn-secondary picker-input-btn" onClick={() => openNativePicker(rangeEndPickerRef)}>
+                      Pick
+                    </button>
+                    <input
+                      ref={rangeEndPickerRef}
+                      type="date"
+                      className="native-picker-input"
+                      value={toLocalDateValue(form.range_end_date)}
+                      onChange={(e) => {
+                        const textValue = fromLocalDateValue(e.target.value);
+                        if (textValue) handleChange('range_end_date', textValue);
+                      }}
+                    />
+                  </div>
                 </div>
               </div>
               <div className="event-grid-two">
                 <div>
                   <label className="block text-sm font-medium mb-1">Daily Start Time</label>
-                  <input
-                    type="text"
-                    className="input"
-                    placeholder="hh:mm AM/PM"
-                    value={form.day_start_time}
-                    onChange={(e) => handleChange('day_start_time', e.target.value)}
-                    required
-                  />
+                  <div className="picker-input-group">
+                    <input
+                      type="text"
+                      className="input"
+                      placeholder="hh:mm AM/PM"
+                      value={form.day_start_time}
+                      readOnly
+                      onClick={() => openNativePicker(dayStartPickerRef)}
+                      required
+                    />
+                    <button type="button" className="btn btn-secondary picker-input-btn" onClick={() => openNativePicker(dayStartPickerRef)}>
+                      Pick
+                    </button>
+                    <input
+                      ref={dayStartPickerRef}
+                      type="time"
+                      className="native-picker-input"
+                      value={parseTime12To24(form.day_start_time)}
+                      onChange={(e) => {
+                        const textValue = fromLocalTimeValue(e.target.value);
+                        if (textValue) handleChange('day_start_time', textValue);
+                      }}
+                    />
+                  </div>
                 </div>
                 <div>
                   <label className="block text-sm font-medium mb-1">Daily End Time</label>
-                  <input
-                    type="text"
-                    className="input"
-                    placeholder="hh:mm AM/PM"
-                    value={form.day_end_time}
-                    onChange={(e) => handleChange('day_end_time', e.target.value)}
-                    required
-                  />
+                  <div className="picker-input-group">
+                    <input
+                      type="text"
+                      className="input"
+                      placeholder="hh:mm AM/PM"
+                      value={form.day_end_time}
+                      readOnly
+                      onClick={() => openNativePicker(dayEndPickerRef)}
+                      required
+                    />
+                    <button type="button" className="btn btn-secondary picker-input-btn" onClick={() => openNativePicker(dayEndPickerRef)}>
+                      Pick
+                    </button>
+                    <input
+                      ref={dayEndPickerRef}
+                      type="time"
+                      className="native-picker-input"
+                      value={parseTime12To24(form.day_end_time)}
+                      onChange={(e) => {
+                        const textValue = fromLocalTimeValue(e.target.value);
+                        if (textValue) handleChange('day_end_time', textValue);
+                      }}
+                    />
+                  </div>
                 </div>
               </div>
               <div className="event-grid-two">
