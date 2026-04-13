@@ -5,9 +5,7 @@ import api from '../services/api';
 import { getCurrentEvent, scheduleEvent, startEvent, stopEvent } from '../services/eventService';
 import {
   formatDateTime12h,
-  localDateInputValue,
-  localTimeInputValue,
-  toDateTimeLocalInput,
+  formatTime12h,
 } from '../utils/formatters';
 
 const DAY_OPTIONS = [
@@ -20,40 +18,109 @@ const DAY_OPTIONS = [
   { value: 6, label: 'Sat' },
 ];
 
+function pad2(value) {
+  return String(value).padStart(2, '0');
+}
+
+function formatDateDdMmYyyy(date) {
+  return `${pad2(date.getDate())}/${pad2(date.getMonth() + 1)}/${date.getFullYear()}`;
+}
+
+function formatDateTimeInput(date) {
+  return `${formatDateDdMmYyyy(date)}, ${formatTime12h(date, '12:00 AM')}`;
+}
+
+function formatTimeInput(date) {
+  return formatTime12h(date, '12:00 AM');
+}
+
+function formatDateInput(date) {
+  return formatDateDdMmYyyy(date);
+}
+
+function parseDateInputToIso(value) {
+  const text = String(value || '').trim();
+  const match = text.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if (!match) return '';
+  const dd = Number.parseInt(match[1], 10);
+  const mm = Number.parseInt(match[2], 10);
+  const yyyy = Number.parseInt(match[3], 10);
+  const dt = new Date(yyyy, mm - 1, dd);
+  if (
+    Number.isNaN(dt.getTime()) ||
+    dt.getFullYear() !== yyyy ||
+    dt.getMonth() !== mm - 1 ||
+    dt.getDate() !== dd
+  ) {
+    return '';
+  }
+  return `${yyyy}-${pad2(mm)}-${pad2(dd)}`;
+}
+
+function parseTime12To24(value) {
+  const text = String(value || '').trim();
+  const match = text.match(/^(\d{1,2}):(\d{2})\s*(AM|PM)$/i);
+  if (!match) return '';
+  let hh = Number.parseInt(match[1], 10);
+  const mm = Number.parseInt(match[2], 10);
+  const mer = match[3].toUpperCase();
+  if (Number.isNaN(hh) || Number.isNaN(mm) || hh < 1 || hh > 12 || mm < 0 || mm > 59) return '';
+  if (hh === 12) hh = 0;
+  if (mer === 'PM') hh += 12;
+  return `${pad2(hh)}:${pad2(mm)}`;
+}
+
+function parseDateTimeInputToIso(value) {
+  const text = String(value || '').trim();
+  const match = text.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})\s*,?\s*(\d{1,2}):(\d{2})\s*(AM|PM)$/i);
+  if (!match) return '';
+  const dateIso = parseDateInputToIso(`${match[1]}/${match[2]}/${match[3]}`);
+  if (!dateIso) return '';
+  const time24 = parseTime12To24(`${match[4]}:${match[5]} ${match[6]}`);
+  if (!time24) return '';
+  return `${dateIso}T${time24}`;
+}
+
+function fromIsoDateTimeToDisplay(value) {
+  const dt = new Date(value);
+  if (Number.isNaN(dt.getTime())) return '';
+  return formatDateTimeInput(dt);
+}
+
 function defaultStart() {
   const now = new Date();
   now.setMinutes(now.getMinutes() + 1);
   now.setSeconds(0, 0);
-  return toDateTimeLocalInput(now);
+  return formatDateTimeInput(now);
 }
 
 function defaultEnd() {
   const end = new Date();
   end.setHours(end.getHours() + 1);
   end.setSeconds(0, 0);
-  return toDateTimeLocalInput(end);
+  return formatDateTimeInput(end);
 }
 
 function defaultRangeStart() {
-  return localDateInputValue(new Date());
+  return formatDateInput(new Date());
 }
 
 function defaultRangeEnd() {
   const end = new Date();
   end.setDate(end.getDate() + 9);
-  return localDateInputValue(end);
+  return formatDateInput(end);
 }
 
 function defaultDayStart() {
   const now = new Date();
   now.setHours(9, 0, 0, 0);
-  return localTimeInputValue(now);
+  return formatTimeInput(now);
 }
 
 function defaultDayEnd() {
   const now = new Date();
   now.setHours(18, 0, 0, 0);
-  return localTimeInputValue(now);
+  return formatTimeInput(now);
 }
 
 export default function EventScheduler() {
@@ -107,8 +174,8 @@ export default function EventScheduler() {
             ...prev,
             event_name: currentEvent.event_name || prev.event_name,
             schedule_mode: 'single',
-            start_time: toDateTimeLocalInput(currentEvent.start_time) || prev.start_time,
-            end_time: toDateTimeLocalInput(currentEvent.end_time) || prev.end_time,
+            start_time: fromIsoDateTimeToDisplay(currentEvent.start_time) || prev.start_time,
+            end_time: fromIsoDateTimeToDisplay(currentEvent.end_time) || prev.end_time,
             camera_mode: currentEvent.camera_mode || prev.camera_mode,
             camera_id: currentEvent.selected_camera_id || prev.camera_id,
             rtsp_url: currentEvent.rtsp_url || prev.rtsp_url,
@@ -195,14 +262,35 @@ export default function EventScheduler() {
       };
 
       if (form.schedule_mode === 'single') {
-        payload.start_time = form.start_time;
-        payload.end_time = form.end_time;
+        const startIso = parseDateTimeInputToIso(form.start_time);
+        const endIso = parseDateTimeInputToIso(form.end_time);
+        if (!startIso || !endIso) {
+          setError('Use date/time format DD/MM/YYYY, hh:mm AM/PM');
+          setSaving(false);
+          return;
+        }
+        payload.start_time = startIso;
+        payload.end_time = endIso;
       } else {
         const selectedDays = getSelectedDays();
-        payload.range_start_date = form.range_start_date;
-        payload.range_end_date = form.range_end_date;
-        payload.day_start_time = form.day_start_time;
-        payload.day_end_time = form.day_end_time;
+        const rangeStartIso = parseDateInputToIso(form.range_start_date);
+        const rangeEndIso = parseDateInputToIso(form.range_end_date);
+        const dayStart24 = parseTime12To24(form.day_start_time);
+        const dayEnd24 = parseTime12To24(form.day_end_time);
+        if (!rangeStartIso || !rangeEndIso) {
+          setError('Use date format DD/MM/YYYY for range dates');
+          setSaving(false);
+          return;
+        }
+        if (!dayStart24 || !dayEnd24) {
+          setError('Use time format hh:mm AM/PM for daily times');
+          setSaving(false);
+          return;
+        }
+        payload.range_start_date = rangeStartIso;
+        payload.range_end_date = rangeEndIso;
+        payload.day_start_time = dayStart24;
+        payload.day_end_time = dayEnd24;
         payload.days_of_week = selectedDays;
         payload.repeat_every_days = Number(form.repeat_every_days || 1);
       }
@@ -281,8 +369,9 @@ export default function EventScheduler() {
               <div className="w-full">
                 <label className="block text-sm font-medium mb-1">Start Time</label>
                 <input
-                  type="datetime-local"
+                  type="text"
                   className="input"
+                  placeholder="DD/MM/YYYY, hh:mm AM/PM"
                   value={form.start_time}
                   onChange={(e) => handleChange('start_time', e.target.value)}
                   required
@@ -291,8 +380,9 @@ export default function EventScheduler() {
               <div className="w-full">
                 <label className="block text-sm font-medium mb-1">End Time</label>
                 <input
-                  type="datetime-local"
+                  type="text"
                   className="input"
+                  placeholder="DD/MM/YYYY, hh:mm AM/PM"
                   value={form.end_time}
                   onChange={(e) => handleChange('end_time', e.target.value)}
                   required
@@ -305,8 +395,9 @@ export default function EventScheduler() {
                 <div>
                   <label className="block text-sm font-medium mb-1">Range Start Date</label>
                   <input
-                    type="date"
+                    type="text"
                     className="input"
+                    placeholder="DD/MM/YYYY"
                     value={form.range_start_date}
                     onChange={(e) => handleChange('range_start_date', e.target.value)}
                     required
@@ -315,8 +406,9 @@ export default function EventScheduler() {
                 <div>
                   <label className="block text-sm font-medium mb-1">Range End Date</label>
                   <input
-                    type="date"
+                    type="text"
                     className="input"
+                    placeholder="DD/MM/YYYY"
                     value={form.range_end_date}
                     onChange={(e) => handleChange('range_end_date', e.target.value)}
                     required
@@ -327,8 +419,9 @@ export default function EventScheduler() {
                 <div>
                   <label className="block text-sm font-medium mb-1">Daily Start Time</label>
                   <input
-                    type="time"
+                    type="text"
                     className="input"
+                    placeholder="hh:mm AM/PM"
                     value={form.day_start_time}
                     onChange={(e) => handleChange('day_start_time', e.target.value)}
                     required
@@ -337,8 +430,9 @@ export default function EventScheduler() {
                 <div>
                   <label className="block text-sm font-medium mb-1">Daily End Time</label>
                   <input
-                    type="time"
+                    type="text"
                     className="input"
+                    placeholder="hh:mm AM/PM"
                     value={form.day_end_time}
                     onChange={(e) => handleChange('day_end_time', e.target.value)}
                     required
