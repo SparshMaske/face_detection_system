@@ -20,6 +20,165 @@ const DAY_OPTIONS = [
   { value: 6, label: 'Sat' },
 ];
 
+const HOUR_12_OPTIONS = Array.from({ length: 12 }, (_, index) => String(index + 1).padStart(2, '0'));
+const MINUTE_OPTIONS = Array.from({ length: 60 }, (_, index) => String(index).padStart(2, '0'));
+
+function splitDateTime12(value) {
+  const fallback = toDateTimeLocalInput(new Date());
+  const normalized = String(value || fallback);
+  const [datePartRaw, timePartRaw] = normalized.split('T');
+  const datePart = datePartRaw || localDateInputValue(new Date());
+  const [hourPart = '00', minutePart = '00'] = String(timePartRaw || '00:00').split(':');
+
+  let hour24 = Number.parseInt(hourPart, 10);
+  let minute = Number.parseInt(minutePart, 10);
+  if (Number.isNaN(hour24)) hour24 = 0;
+  if (Number.isNaN(minute)) minute = 0;
+  hour24 = Math.min(23, Math.max(0, hour24));
+  minute = Math.min(59, Math.max(0, minute));
+
+  return {
+    date: datePart,
+    hour12: String(hour24 % 12 || 12).padStart(2, '0'),
+    minute: String(minute).padStart(2, '0'),
+    meridiem: hour24 >= 12 ? 'PM' : 'AM',
+  };
+}
+
+function composeDateTime12(parts) {
+  const datePart = String(parts?.date || localDateInputValue(new Date()));
+  let hour12 = Number.parseInt(String(parts?.hour12 || '12'), 10);
+  let minute = Number.parseInt(String(parts?.minute || '00'), 10);
+  const meridiem = String(parts?.meridiem || 'AM').toUpperCase() === 'PM' ? 'PM' : 'AM';
+
+  if (Number.isNaN(hour12) || hour12 < 1) hour12 = 12;
+  if (hour12 > 12) hour12 = 12;
+  if (Number.isNaN(minute) || minute < 0) minute = 0;
+  if (minute > 59) minute = 59;
+
+  let hour24 = hour12 % 12;
+  if (meridiem === 'PM') hour24 += 12;
+
+  return `${datePart}T${String(hour24).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
+}
+
+function splitTime12(value) {
+  const normalized = String(value || '00:00');
+  const [hourPart = '00', minutePart = '00'] = normalized.split(':');
+
+  let hour24 = Number.parseInt(hourPart, 10);
+  let minute = Number.parseInt(minutePart, 10);
+  if (Number.isNaN(hour24)) hour24 = 0;
+  if (Number.isNaN(minute)) minute = 0;
+  hour24 = Math.min(23, Math.max(0, hour24));
+  minute = Math.min(59, Math.max(0, minute));
+
+  return {
+    hour12: String(hour24 % 12 || 12).padStart(2, '0'),
+    minute: String(minute).padStart(2, '0'),
+    meridiem: hour24 >= 12 ? 'PM' : 'AM',
+  };
+}
+
+function composeTime12(parts) {
+  let hour12 = Number.parseInt(String(parts?.hour12 || '12'), 10);
+  let minute = Number.parseInt(String(parts?.minute || '00'), 10);
+  const meridiem = String(parts?.meridiem || 'AM').toUpperCase() === 'PM' ? 'PM' : 'AM';
+
+  if (Number.isNaN(hour12) || hour12 < 1) hour12 = 12;
+  if (hour12 > 12) hour12 = 12;
+  if (Number.isNaN(minute) || minute < 0) minute = 0;
+  if (minute > 59) minute = 59;
+
+  let hour24 = hour12 % 12;
+  if (meridiem === 'PM') hour24 += 12;
+
+  return `${String(hour24).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
+}
+
+function DateTime12Field({ value, onChange, required = false }) {
+  const parts = splitDateTime12(value);
+  const update = (patch) => onChange(composeDateTime12({ ...parts, ...patch }));
+
+  return (
+    <div className="event-grid-three">
+      <input
+        type="date"
+        className="input"
+        value={parts.date}
+        onChange={(e) => update({ date: e.target.value })}
+        required={required}
+      />
+      <select
+        className="input"
+        value={parts.hour12}
+        onChange={(e) => update({ hour12: e.target.value })}
+      >
+        {HOUR_12_OPTIONS.map((hour) => (
+          <option key={hour} value={hour}>{hour}</option>
+        ))}
+      </select>
+      <div className="event-grid-two">
+        <select
+          className="input"
+          value={parts.minute}
+          onChange={(e) => update({ minute: e.target.value })}
+        >
+          {MINUTE_OPTIONS.map((minute) => (
+            <option key={minute} value={minute}>{minute}</option>
+          ))}
+        </select>
+        <select
+          className="input"
+          value={parts.meridiem}
+          onChange={(e) => update({ meridiem: e.target.value })}
+        >
+          <option value="AM">AM</option>
+          <option value="PM">PM</option>
+        </select>
+      </div>
+    </div>
+  );
+}
+
+function Time12Field({ value, onChange, required = false }) {
+  const parts = splitTime12(value);
+  const update = (patch) => onChange(composeTime12({ ...parts, ...patch }));
+
+  return (
+    <div className="event-grid-three">
+      <select
+        className="input"
+        value={parts.hour12}
+        onChange={(e) => update({ hour12: e.target.value })}
+        required={required}
+      >
+        {HOUR_12_OPTIONS.map((hour) => (
+          <option key={hour} value={hour}>{hour}</option>
+        ))}
+      </select>
+      <select
+        className="input"
+        value={parts.minute}
+        onChange={(e) => update({ minute: e.target.value })}
+        required={required}
+      >
+        {MINUTE_OPTIONS.map((minute) => (
+          <option key={minute} value={minute}>{minute}</option>
+        ))}
+      </select>
+      <select
+        className="input"
+        value={parts.meridiem}
+        onChange={(e) => update({ meridiem: e.target.value })}
+      >
+        <option value="AM">AM</option>
+        <option value="PM">PM</option>
+      </select>
+    </div>
+  );
+}
+
 function defaultStart() {
   const now = new Date();
   now.setMinutes(now.getMinutes() + 1);
@@ -280,21 +439,17 @@ export default function EventScheduler() {
             <div className="event-grid-two">
               <div className="w-full">
                 <label className="block text-sm font-medium mb-1">Start Time</label>
-                <input
-                  type="datetime-local"
-                  className="input"
+                <DateTime12Field
                   value={form.start_time}
-                  onChange={(e) => handleChange('start_time', e.target.value)}
+                  onChange={(nextValue) => handleChange('start_time', nextValue)}
                   required
                 />
               </div>
               <div className="w-full">
                 <label className="block text-sm font-medium mb-1">End Time</label>
-                <input
-                  type="datetime-local"
-                  className="input"
+                <DateTime12Field
                   value={form.end_time}
-                  onChange={(e) => handleChange('end_time', e.target.value)}
+                  onChange={(nextValue) => handleChange('end_time', nextValue)}
                   required
                 />
               </div>
@@ -326,21 +481,17 @@ export default function EventScheduler() {
               <div className="event-grid-two">
                 <div>
                   <label className="block text-sm font-medium mb-1">Daily Start Time</label>
-                  <input
-                    type="time"
-                    className="input"
+                  <Time12Field
                     value={form.day_start_time}
-                    onChange={(e) => handleChange('day_start_time', e.target.value)}
+                    onChange={(nextValue) => handleChange('day_start_time', nextValue)}
                     required
                   />
                 </div>
                 <div>
                   <label className="block text-sm font-medium mb-1">Daily End Time</label>
-                  <input
-                    type="time"
-                    className="input"
+                  <Time12Field
                     value={form.day_end_time}
-                    onChange={(e) => handleChange('day_end_time', e.target.value)}
+                    onChange={(nextValue) => handleChange('day_end_time', nextValue)}
                     required
                   />
                 </div>

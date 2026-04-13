@@ -90,6 +90,63 @@ class ReportGenerator:
         return f"{hours:02d}:{minutes:02d}:{secs:02d}"
 
     @staticmethod
+    def _format_date_ddmmyyyy(value):
+        if value is None:
+            return ''
+        dt = value if isinstance(value, datetime) else None
+        if dt is None:
+            try:
+                dt = datetime.fromisoformat(str(value).replace('Z', '').replace(' ', 'T'))
+            except Exception:
+                try:
+                    dt = datetime.strptime(str(value), '%d/%m/%Y')
+                except Exception:
+                    return str(value)
+        return dt.strftime('%d/%m/%Y')
+
+    @staticmethod
+    def _format_datetime_12h(value):
+        if value is None:
+            return ''
+        if isinstance(value, str):
+            text_value = value.strip()
+            if len(text_value) == 10:
+                for fmt in ('%Y-%m-%d', '%d/%m/%Y'):
+                    try:
+                        dt = datetime.strptime(text_value, fmt)
+                        return dt.strftime('%d/%m/%Y')
+                    except Exception:
+                        continue
+        dt = value if isinstance(value, datetime) else None
+        if dt is None:
+            text = str(value or '').strip()
+            if not text:
+                return ''
+            for candidate in (text, text[:22], text[:19], text.replace('T', ' ')):
+                for fmt in (
+                    '%Y-%m-%d %I:%M:%S %p',
+                    '%Y-%m-%d %H:%M:%S',
+                    '%Y-%m-%dT%H:%M:%S',
+                    '%d/%m/%Y %I:%M:%S %p',
+                    '%d/%m/%Y %H:%M:%S',
+                    '%d/%m/%Y %I:%M %p',
+                    '%d/%m/%Y %H:%M',
+                ):
+                    try:
+                        dt = datetime.strptime(candidate, fmt)
+                        break
+                    except Exception:
+                        continue
+                if dt is not None:
+                    break
+            if dt is None:
+                try:
+                    dt = datetime.fromisoformat(text.replace('Z', '').replace(' ', 'T'))
+                except Exception:
+                    return text
+        return dt.strftime('%d/%m/%Y %I:%M %p')
+
+    @staticmethod
     def _sanitize_token(raw_value):
         text = str(raw_value or '').strip()
         if not text:
@@ -125,7 +182,7 @@ class ReportGenerator:
                 'department': staff.department or '-',
                 'position': staff.position or '-',
                 'status': 'Active' if staff.is_active else 'Inactive',
-                'created_at': staff.created_at.strftime('%Y-%m-%d %I:%M:%S %p') if staff.created_at else '',
+                'created_at': self._format_datetime_12h(staff.created_at),
             })
         return rows
 
@@ -143,6 +200,8 @@ class ReportGenerator:
         suffix = self._sanitize_token(event_id) if event_id else datetime.now().strftime('%Y%m%d_%H%M%S')
         csv_filename = f"{safe_event_name}_{suffix}_data.csv"
         csv_path = os.path.join(event_dir, csv_filename)
+        period_start_label = self._format_datetime_12h(start_date) or str(start_date or '')
+        period_end_label = self._format_datetime_12h(end_date) or str(end_date or '')
 
         with open(csv_path, 'w', encoding='utf-8', newline='') as fp:
             writer = csv.writer(fp)
@@ -168,8 +227,8 @@ class ReportGenerator:
                     'visitor',
                     event_name or '',
                     event_id or '',
-                    start_date,
-                    end_date,
+                    period_start_label,
+                    period_end_label,
                     visitor_item.get('visitor_id', ''),
                     '',
                     '',
@@ -186,8 +245,8 @@ class ReportGenerator:
                     'management',
                     event_name or '',
                     event_id or '',
-                    start_date,
-                    end_date,
+                    period_start_label,
+                    period_end_label,
                     staff_item.get('staff_id', ''),
                     staff_item.get('name', ''),
                     staff_item.get('department', ''),
@@ -695,14 +754,7 @@ class ReportGenerator:
             text = str(value or '').strip()
             if not text or text == '-':
                 return '-'
-            for candidate in (text, text[:22], text[:19], text.replace('T', ' ')):
-                for fmt in ('%Y-%m-%d %I:%M:%S %p', '%Y-%m-%d %H:%M:%S', '%Y-%m-%dT%H:%M:%S'):
-                    try:
-                        dt = datetime.strptime(candidate, fmt)
-                        return dt.strftime('%Y-%m-%d %I:%M %p')
-                    except Exception:
-                        continue
-            return text[:16]
+            return self._format_datetime_12h(text) or text[:16]
 
         if not visitors_payload:
             pdf.set_font('Arial', '', 10)
@@ -820,8 +872,8 @@ class ReportGenerator:
 
         summary_table = Table([
             ['Date', capture_date_text],
-            ['First In Time', first_in.strftime('%Y-%m-%d %I:%M:%S %p')],
-            ['Last Out Time', last_out.strftime('%Y-%m-%d %I:%M:%S %p')],
+            ['First In Time', self._format_datetime_12h(first_in)],
+            ['Last Out Time', self._format_datetime_12h(last_out)],
             ['Total Duration', duration_text],
         ], colWidths=[150, 280])
         summary_table.setStyle(TableStyle([
@@ -859,8 +911,8 @@ class ReportGenerator:
         pdf.set_font('Arial', 'B', 10)
         summary_rows = [
             ('Date', capture_date_text),
-            ('First In Time', first_in.strftime('%Y-%m-%d %I:%M:%S %p')),
-            ('Last Out Time', last_out.strftime('%Y-%m-%d %I:%M:%S %p')),
+            ('First In Time', self._format_datetime_12h(first_in)),
+            ('Last Out Time', self._format_datetime_12h(last_out)),
             ('Total Duration', duration_text),
         ]
         for key, value in summary_rows:
@@ -935,9 +987,9 @@ class ReportGenerator:
 
                 visitors_payload.append({
                     'visitor_id': visitor_code,
-                    'date': first_in.strftime('%Y-%m-%d') if first_in else '-',
-                    'first_in': first_in.strftime('%Y-%m-%d %I:%M:%S %p') if first_in else '-',
-                    'last_out': last_out.strftime('%Y-%m-%d %I:%M:%S %p') if last_out else '-',
+                    'date': self._format_date_ddmmyyyy(first_in) if first_in else '-',
+                    'first_in': self._format_datetime_12h(first_in) if first_in else '-',
+                    'last_out': self._format_datetime_12h(last_out) if last_out else '-',
                     'duration': self._format_duration(duration_seconds),
                     'snapshot_path': snapshot_path,
                 })
@@ -947,7 +999,9 @@ class ReportGenerator:
     @staticmethod
     def _build_report_title_subtitle(start_date, end_date, report_type='daily', event_name=None, event_id=None, visitor_count=0):
         title_text = f"Visitor Report ({str(report_type or 'daily').title()})"
-        subtitle_text = f"Period: {start_date} to {end_date}"
+        start_label = ReportGenerator._format_datetime_12h(start_date)
+        end_label = ReportGenerator._format_datetime_12h(end_date)
+        subtitle_text = f"Period: {start_label} to {end_label}"
         if event_name:
             subtitle_text = f"Event: {event_name} | {subtitle_text}"
         if event_id:
@@ -1002,15 +1056,21 @@ class ReportGenerator:
             normalized = text.replace('Z', '')
             try:
                 dt = datetime.fromisoformat(normalized.replace(' ', 'T'))
-                return dt.strftime('%B %d, %Y').replace(' 0', ' ')
+                return dt.strftime('%d/%m/%Y')
             except Exception:
                 pass
             if len(text) >= 10:
                 try:
                     dt = datetime.fromisoformat(text[:10])
-                    return dt.strftime('%B %d, %Y').replace(' 0', ' ')
+                    return dt.strftime('%d/%m/%Y')
                 except Exception:
                     pass
+            for fmt in ('%d/%m/%Y', '%d/%m/%Y %I:%M %p', '%d/%m/%Y %H:%M'):
+                try:
+                    dt = datetime.strptime(text, fmt)
+                    return dt.strftime('%d/%m/%Y')
+                except Exception:
+                    continue
             return text
 
         def _format_period_from_subtitle(raw_subtitle):
@@ -1401,7 +1461,7 @@ class ReportGenerator:
         last_out = max(item[1] for item in normalized_sessions)
         duration_seconds = max(0, int((last_out - first_in).total_seconds()))
         duration_text = self._format_duration(duration_seconds)
-        capture_date_text = first_in.strftime('%Y-%m-%d')
+        capture_date_text = first_in.strftime('%d/%m/%Y')
         visitor_image_path = self._select_best_snapshot(
             visitor,
             visitor.visitor_id,

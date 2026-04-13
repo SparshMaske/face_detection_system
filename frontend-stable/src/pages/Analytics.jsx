@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { getFootfallTrends, getPeakHours, getSummary } from '../services/analyticsService';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
+import { formatDateOnly } from '../utils/formatters';
 
 export default function Analytics() {
   const [trends, setTrends] = useState([]);
@@ -59,7 +60,7 @@ export default function Analytics() {
           <ResponsiveContainer width="100%" height={250}>
             <BarChart data={trends}>
               <CartesianGrid strokeDasharray="3 3" />
-              <XAxis dataKey="date" tick={{fontSize: 10}} />
+              <XAxis dataKey="date" tick={{ fontSize: 10 }} tickFormatter={(value) => formatDateOnly(value, value)} />
               <YAxis />
               <Tooltip />
               <Bar dataKey="count" fill="#2563eb" />
