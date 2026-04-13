@@ -1,4 +1,5 @@
 import atexit
+import datetime
 import os
 import subprocess
 import threading
@@ -73,6 +74,23 @@ class EventLedController:
             'LED_REQUIRED_SERVICES',
             ['visitor-backend', 'nginx', 'hostapd', 'dnsmasq'],
         )
+        self.camera_health_enabled = _env_bool('LED_CAMERA_HEALTH_EXCEPTIONS_ENABLED', default=True)
+        self.camera_stale_sec = max(3, _env_int('LED_CAMERA_STALE_SEC', 8))
+        self.camera_error_tokens = [
+            tok.lower() for tok in _env_list(
+                'LED_CAMERA_ERROR_TOKENS',
+                [
+                    'camera not found',
+                    'could not open camera stream',
+                    'failed to read camera frame',
+                    'processing error',
+                    'camera disconnected',
+                    'device not found',
+                    'no such file',
+                    'input/output error',
+                ],
+            )
+        ]
 
         self._lock = threading.Lock()
         self._blink_thread = None
@@ -83,6 +101,8 @@ class EventLedController:
         self._state = None
         self._gpio_ready = False
         self._GPIO = _NoopGPIO()
+        self._last_interrupt_reason = ''
+        self._last_logged_interrupt_reason = ''
 
     def start(self):
         if not self.enabled:
@@ -147,11 +167,72 @@ class EventLedController:
         except Exception:
             return False
 
-    def _system_ready(self):
+    def _system_not_ready_reason(self):
         for svc in self.required_services:
             if not self._is_service_active(svc):
-                return False
-        return True
+                return f"Required service '{svc}' is not active"
+        return ''
+
+    def _runtime_camera_health_issue(self, snapshot):
+        if not self.camera_health_enabled:
+            return ''
+
+        status = str(snapshot.get('status') or '').strip().lower()
+        workflow_active = bool(snapshot.get('workflow_active'))
+        if not (workflow_active or status == 'active'):
+            return ''
+
+        selected_camera_id = str(snapshot.get('selected_camera_id') or '').strip()
+        if not selected_camera_id:
+            return 'Event is active but no camera is selected'
+
+        try:
+            from models.camera import Camera
+
+            cam = Camera.query.filter_by(camera_id=selected_camera_id).first()
+            if cam is None:
+                return f"Selected camera '{selected_camera_id}' not found in database"
+            if not bool(getattr(cam, 'is_active', True)):
+                return f"Selected camera '{selected_camera_id}' is inactive"
+        except Exception as exc:
+            # DB/read failures should be considered an interruption for LED safety.
+            return f"Failed to validate selected camera '{selected_camera_id}': {exc}"
+
+        try:
+            from routes.camera import _RUNTIME_LOCK, _RUNTIME_STATS, _default_runtime
+
+            with _RUNTIME_LOCK:
+                runtime = dict(_RUNTIME_STATS.get(selected_camera_id, _default_runtime(selected_camera_id)))
+        except Exception as exc:
+            return f"Failed to read runtime stats for '{selected_camera_id}': {exc}"
+
+        camera_online = runtime.get('camera_online')
+        if camera_online is False:
+            return f"Camera '{selected_camera_id}' is offline/disconnected"
+
+        last_error = str(runtime.get('last_error') or '').strip()
+        if last_error:
+            lowered = last_error.lower()
+            if any(token and token in lowered for token in self.camera_error_tokens):
+                return f"Camera '{selected_camera_id}' runtime error: {last_error}"
+
+        last_frame_raw = runtime.get('last_frame_at')
+        if not last_frame_raw:
+            return f"Camera '{selected_camera_id}' has not produced frames yet"
+
+        try:
+            last_frame_dt = datetime.datetime.fromisoformat(str(last_frame_raw))
+            age_sec = (datetime.datetime.utcnow() - last_frame_dt).total_seconds()
+            if age_sec > float(self.camera_stale_sec):
+                return (
+                    f"Camera '{selected_camera_id}' frame stream is stale "
+                    f"({age_sec:.1f}s > {self.camera_stale_sec}s)"
+                )
+        except Exception:
+            # Invalid timestamp indicates broken runtime telemetry.
+            return f"Camera '{selected_camera_id}' has invalid frame timestamp"
+
+        return ''
 
     def _blink_green_loop(self):
         while not self._stop_event.is_set():
@@ -226,18 +307,26 @@ class EventLedController:
             pass
 
     def _desired_state(self):
-        if not self._system_ready():
+        system_reason = self._system_not_ready_reason()
+        if system_reason:
+            self._last_interrupt_reason = system_reason
             return 'INTERRUPTED'
 
         try:
             from routes.events import get_event_state_snapshot
             snapshot = get_event_state_snapshot(sync=True) or {}
         except Exception as exc:
-            self.app.logger.warning("LED monitor: failed to read event state: %s", exc)
+            self._last_interrupt_reason = f"Failed to read event state: {exc}"
+            return 'INTERRUPTED'
+
+        camera_reason = self._runtime_camera_health_issue(snapshot)
+        if camera_reason:
+            self._last_interrupt_reason = camera_reason
             return 'INTERRUPTED'
 
         status = str(snapshot.get('status') or '').strip().lower()
         workflow_active = bool(snapshot.get('workflow_active'))
+        self._last_interrupt_reason = ''
 
         # Requested behavior:
         # - READY (wifi/ap on) => blink green
@@ -256,6 +345,15 @@ class EventLedController:
             try:
                 with self.app.app_context():
                     next_state = self._desired_state()
+                    if (
+                        next_state == 'INTERRUPTED'
+                        and self._last_interrupt_reason
+                        and self._last_interrupt_reason != self._last_logged_interrupt_reason
+                    ):
+                        self.app.logger.warning("LED interrupted: %s", self._last_interrupt_reason)
+                        self._last_logged_interrupt_reason = self._last_interrupt_reason
+                    elif next_state != 'INTERRUPTED':
+                        self._last_logged_interrupt_reason = ''
                     self._set_state(next_state)
             except Exception as exc:
                 self.app.logger.warning("LED monitor loop error: %s", exc)
