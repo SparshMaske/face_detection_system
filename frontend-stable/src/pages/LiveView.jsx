@@ -142,15 +142,19 @@ export default function LiveView() {
 
   const isClientDeviceMode = useMemo(() => {
     if (!selectedCamera) return false;
-    const eventWantsSelectedDeviceCamera =
-      eventInfo?.camera_mode === 'default' &&
-      (!eventInfo?.selected_camera_id || eventInfo.selected_camera_id === selectedCamera.camera_id);
     return (
       selectedCamera.camera_id === 'EVENT_DEFAULT' ||
-      String(selectedCamera.camera_type || '').toLowerCase() === 'browser' ||
-      eventWantsSelectedDeviceCamera
+      String(selectedCamera.camera_type || '').toLowerCase() === 'browser'
     );
-  }, [eventInfo?.camera_mode, eventInfo?.selected_camera_id, selectedCamera]);
+  }, [selectedCamera]);
+
+  const supportsDeviceCameraApi = useMemo(() => {
+    if (typeof window === 'undefined' || typeof navigator === 'undefined') return false;
+    const hasApi = Boolean(navigator?.mediaDevices?.getUserMedia);
+    if (!hasApi) return false;
+    // Browser camera access on non-localhost generally requires secure context (HTTPS).
+    return Boolean(window.isSecureContext);
+  }, []);
 
   const isPhoneClient = useMemo(() => {
     if (typeof navigator === 'undefined') return false;
@@ -244,16 +248,40 @@ export default function LiveView() {
   ]);
 
   useEffect(() => {
+    if (!isClientDeviceMode || supportsDeviceCameraApi) return;
+    const backendFallback = cameras.find((cam) => (
+      cam?.camera_id &&
+      cam.camera_id !== 'EVENT_DEFAULT' &&
+      String(cam?.camera_type || '').toLowerCase() !== 'browser'
+    ));
+    if (backendFallback && backendFallback.camera_id !== selectedCamera?.camera_id) {
+      setSelectedCamera(backendFallback);
+      setDeviceError('');
+      setStreamError('');
+      setStreamNonce(Date.now());
+      return;
+    }
+    setDeviceError('Device camera needs HTTPS/secure context. Use Existing/RTSP camera for this host.');
+  }, [cameras, isClientDeviceMode, selectedCamera?.camera_id, supportsDeviceCameraApi]);
+
+  useEffect(() => {
     if (!liveFeedEnabled) {
+      stopLocalCamera(true);
+      setDeviceError('');
       clearProcessedFrame();
       setStreamError('');
       return;
     }
     setStreamNonce(Date.now());
-  }, [clearProcessedFrame, liveFeedEnabled]);
+  }, [clearProcessedFrame, liveFeedEnabled, stopLocalCamera]);
 
   useEffect(() => {
-    if (!isClientDeviceMode) {
+    if (!isClientDeviceMode || !liveFeedEnabled) {
+      stopLocalCamera(true);
+      return undefined;
+    }
+    if (!supportsDeviceCameraApi) {
+      setDeviceError('Device camera API unavailable on this host/browser. Use Existing/RTSP camera.');
       stopLocalCamera(true);
       return undefined;
     }
@@ -562,7 +590,7 @@ export default function LiveView() {
       if (timerId) window.clearTimeout(timerId);
       stopLocalCamera(false);
     };
-  }, [cameraFacingMode, clearProcessedFrame, isClientDeviceMode, isPhoneClient, liveFeedEnabled, selectedCamera?.camera_id, stopLocalCamera]);
+  }, [cameraFacingMode, clearProcessedFrame, isClientDeviceMode, isPhoneClient, liveFeedEnabled, selectedCamera?.camera_id, stopLocalCamera, supportsDeviceCameraApi]);
 
   useEffect(() => () => stopLocalCamera(true), [stopLocalCamera]);
 
@@ -648,9 +676,7 @@ export default function LiveView() {
 
       {selectedCamera ? (
         <div className="bg-black rounded-lg overflow-hidden h-[600px] flex items-center justify-center relative">
-          {deviceError ? (
-            <div className="text-center text-white p-6">{deviceError}</div>
-          ) : !liveFeedEnabled ? (
+          {!liveFeedEnabled ? (
             <>
               {isClientDeviceMode && (
                 <>
@@ -673,6 +699,8 @@ export default function LiveView() {
                 Live feed is turned off. Backend processing remains active for scheduled event cameras.
               </div>
             </>
+          ) : deviceError ? (
+            <div className="text-center text-white p-6">{deviceError}</div>
           ) : streamError ? (
             <div className="text-center text-white p-6">
               <p className="mb-3">{streamError}</p>
