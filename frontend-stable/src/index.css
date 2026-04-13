@@ -485,12 +485,6 @@ input[type="range"].input {
   gap: 1rem;
 }
 
-.event-grid-three {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 0.75rem;
-}
-
 .event-actions {
   display: flex;
   flex-wrap: wrap;
@@ -661,10 +655,6 @@ input[type="range"].input {
   }
 
   .event-grid-two {
-    grid-template-columns: 1fr;
-  }
-
-  .event-grid-three {
     grid-template-columns: 1fr;
   }
 
