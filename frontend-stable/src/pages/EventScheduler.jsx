@@ -81,19 +81,39 @@ function parseDateTimeInputToIso(value) {
   return `${dateIso}T${time24}`;
 }
 
+function toLocalDateValueFromDateTimeDisplay(displayValue) {
+  const iso = parseDateTimeInputToIso(displayValue);
+  if (!iso) return '';
+  return String(iso).slice(0, 10);
+}
+
+function time24To12Parts(time24Text) {
+  const match = String(time24Text || '').match(/^(\d{1,2}):(\d{2})$/);
+  if (!match) return { hour12: 12, minute: 0, meridiem: 'AM' };
+  const hour24 = Math.max(0, Math.min(23, Number.parseInt(match[1], 10) || 0));
+  const minute = Math.max(0, Math.min(59, Number.parseInt(match[2], 10) || 0));
+  const meridiem = hour24 >= 12 ? 'PM' : 'AM';
+  let hour12 = hour24 % 12;
+  if (hour12 === 0) hour12 = 12;
+  return { hour12, minute, meridiem };
+}
+
+function time12PartsToText({ hour12, minute, meridiem }) {
+  return `${pad2(hour12)}:${pad2(minute)} ${String(meridiem || 'AM').toUpperCase()}`;
+}
+
+function toTime24FromParts({ hour12, minute, meridiem }) {
+  let h = Number.parseInt(String(hour12 || 12), 10);
+  const m = Number.parseInt(String(minute || 0), 10);
+  const ampm = String(meridiem || 'AM').toUpperCase();
+  if (Number.isNaN(h) || h < 1 || h > 12) h = 12;
+  let hour24 = h % 12;
+  if (ampm === 'PM') hour24 += 12;
+  return `${pad2(hour24)}:${pad2(Number.isNaN(m) ? 0 : Math.max(0, Math.min(59, m)))}`;
+}
+
 function fromIsoDateTimeToDisplay(value) {
   const dt = new Date(value);
-  if (Number.isNaN(dt.getTime())) return '';
-  return formatDateTimeInput(dt);
-}
-
-function toLocalDateTimeValue(displayValue) {
-  return parseDateTimeInputToIso(displayValue) || '';
-}
-
-function fromLocalDateTimeValue(localValue) {
-  if (!localValue) return '';
-  const dt = new Date(localValue);
   if (Number.isNaN(dt.getTime())) return '';
   return formatDateTimeInput(dt);
 }
@@ -173,12 +193,9 @@ function defaultDayEnd() {
 
 export default function EventScheduler() {
   const navigate = useNavigate();
-  const singleStartPickerRef = useRef(null);
-  const singleEndPickerRef = useRef(null);
   const rangeStartPickerRef = useRef(null);
   const rangeEndPickerRef = useRef(null);
-  const dayStartPickerRef = useRef(null);
-  const dayEndPickerRef = useRef(null);
+  const pickerCardRef = useRef(null);
   const [cameras, setCameras] = useState([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -200,6 +217,15 @@ export default function EventScheduler() {
     camera_mode: 'default',
     rtsp_url: '',
     camera_id: '',
+  });
+  const [pickerState, setPickerState] = useState({
+    open: false,
+    target: '',
+    mode: 'datetime',
+    date: '',
+    hour12: 12,
+    minute: 0,
+    meridiem: 'AM',
   });
 
   const activeStatus = eventState?.status || 'idle';
@@ -279,6 +305,98 @@ export default function EventScheduler() {
   const handleChange = (key, value) => {
     setForm((prev) => ({ ...prev, [key]: value }));
   };
+
+  const openTwelveHourPicker = (target) => {
+    if (!target) return;
+    if (target === 'start_time' || target === 'end_time') {
+      const displayValue = String(form[target] || '').trim();
+      const iso = parseDateTimeInputToIso(displayValue);
+      const dateValue = toLocalDateValueFromDateTimeDisplay(displayValue);
+      const dt = iso ? new Date(iso) : new Date();
+      const time24 = `${pad2(dt.getHours())}:${pad2(dt.getMinutes())}`;
+      const parts = time24To12Parts(time24);
+      setPickerState({
+        open: true,
+        target,
+        mode: 'datetime',
+        date: dateValue || toLocalDateValue(formatDateInput(new Date())),
+        hour12: parts.hour12,
+        minute: parts.minute,
+        meridiem: parts.meridiem,
+      });
+      return;
+    }
+    if (target === 'day_start_time' || target === 'day_end_time') {
+      const time24 = parseTime12To24(form[target]) || '09:00';
+      const parts = time24To12Parts(time24);
+      setPickerState({
+        open: true,
+        target,
+        mode: 'time',
+        date: '',
+        hour12: parts.hour12,
+        minute: parts.minute,
+        meridiem: parts.meridiem,
+      });
+    }
+  };
+
+  const closeTwelveHourPicker = () => {
+    setPickerState((prev) => ({ ...prev, open: false, target: '' }));
+  };
+
+  const adjustPickerHour = (delta) => {
+    setPickerState((prev) => {
+      const current = Number(prev.hour12 || 12);
+      const next = ((current - 1 + delta + 120) % 12) + 1;
+      return { ...prev, hour12: next };
+    });
+  };
+
+  const adjustPickerMinute = (delta) => {
+    setPickerState((prev) => {
+      const current = Number(prev.minute || 0);
+      const next = ((current + delta + 6000) % 60);
+      return { ...prev, minute: next };
+    });
+  };
+
+  const saveTwelveHourPicker = () => {
+    if (!pickerState.target) return;
+    const time24 = toTime24FromParts(pickerState);
+    if (pickerState.mode === 'datetime') {
+      if (!pickerState.date) {
+        closeTwelveHourPicker();
+        return;
+      }
+      const [yyyy, mm, dd] = String(pickerState.date).split('-');
+      const textValue = `${dd}/${mm}/${yyyy}, ${time12PartsToText(pickerState)}`;
+      handleChange(pickerState.target, textValue);
+      closeTwelveHourPicker();
+      return;
+    }
+    const timeText = fromLocalTimeValue(time24) || time12PartsToText(pickerState);
+    handleChange(pickerState.target, timeText);
+    closeTwelveHourPicker();
+  };
+
+  useEffect(() => {
+    if (!pickerState.open) return undefined;
+    const onKeyDown = (evt) => {
+      if (evt.key === 'Escape') closeTwelveHourPicker();
+    };
+    const onMouseDown = (evt) => {
+      const card = pickerCardRef.current;
+      if (!card) return;
+      if (!card.contains(evt.target)) closeTwelveHourPicker();
+    };
+    window.addEventListener('keydown', onKeyDown);
+    window.addEventListener('mousedown', onMouseDown);
+    return () => {
+      window.removeEventListener('keydown', onKeyDown);
+      window.removeEventListener('mousedown', onMouseDown);
+    };
+  }, [pickerState.open]);
 
   const toggleCustomDay = (dayValue) => {
     setForm((prev) => {
@@ -429,22 +547,12 @@ export default function EventScheduler() {
                     placeholder="DD/MM/YYYY, hh:mm AM/PM"
                     value={form.start_time}
                     readOnly
-                    onClick={() => openNativePicker(singleStartPickerRef)}
+                    onClick={() => openTwelveHourPicker('start_time')}
                     required
                   />
-                  <button type="button" className="btn btn-secondary picker-input-btn" onClick={() => openNativePicker(singleStartPickerRef)}>
+                  <button type="button" className="btn btn-secondary picker-input-btn" onClick={() => openTwelveHourPicker('start_time')}>
                     Pick
                   </button>
-                  <input
-                    ref={singleStartPickerRef}
-                    type="datetime-local"
-                    className="native-picker-input"
-                    value={toLocalDateTimeValue(form.start_time)}
-                    onChange={(e) => {
-                      const textValue = fromLocalDateTimeValue(e.target.value);
-                      if (textValue) handleChange('start_time', textValue);
-                    }}
-                  />
                 </div>
               </div>
               <div className="w-full">
@@ -456,22 +564,12 @@ export default function EventScheduler() {
                     placeholder="DD/MM/YYYY, hh:mm AM/PM"
                     value={form.end_time}
                     readOnly
-                    onClick={() => openNativePicker(singleEndPickerRef)}
+                    onClick={() => openTwelveHourPicker('end_time')}
                     required
                   />
-                  <button type="button" className="btn btn-secondary picker-input-btn" onClick={() => openNativePicker(singleEndPickerRef)}>
+                  <button type="button" className="btn btn-secondary picker-input-btn" onClick={() => openTwelveHourPicker('end_time')}>
                     Pick
                   </button>
-                  <input
-                    ref={singleEndPickerRef}
-                    type="datetime-local"
-                    className="native-picker-input"
-                    value={toLocalDateTimeValue(form.end_time)}
-                    onChange={(e) => {
-                      const textValue = fromLocalDateTimeValue(e.target.value);
-                      if (textValue) handleChange('end_time', textValue);
-                    }}
-                  />
                 </div>
               </div>
             </div>
@@ -543,22 +641,12 @@ export default function EventScheduler() {
                       placeholder="hh:mm AM/PM"
                       value={form.day_start_time}
                       readOnly
-                      onClick={() => openNativePicker(dayStartPickerRef)}
+                      onClick={() => openTwelveHourPicker('day_start_time')}
                       required
                     />
-                    <button type="button" className="btn btn-secondary picker-input-btn" onClick={() => openNativePicker(dayStartPickerRef)}>
+                    <button type="button" className="btn btn-secondary picker-input-btn" onClick={() => openTwelveHourPicker('day_start_time')}>
                       Pick
                     </button>
-                    <input
-                      ref={dayStartPickerRef}
-                      type="time"
-                      className="native-picker-input"
-                      value={parseTime12To24(form.day_start_time)}
-                      onChange={(e) => {
-                        const textValue = fromLocalTimeValue(e.target.value);
-                        if (textValue) handleChange('day_start_time', textValue);
-                      }}
-                    />
                   </div>
                 </div>
                 <div>
@@ -570,22 +658,12 @@ export default function EventScheduler() {
                       placeholder="hh:mm AM/PM"
                       value={form.day_end_time}
                       readOnly
-                      onClick={() => openNativePicker(dayEndPickerRef)}
+                      onClick={() => openTwelveHourPicker('day_end_time')}
                       required
                     />
-                    <button type="button" className="btn btn-secondary picker-input-btn" onClick={() => openNativePicker(dayEndPickerRef)}>
+                    <button type="button" className="btn btn-secondary picker-input-btn" onClick={() => openTwelveHourPicker('day_end_time')}>
                       Pick
                     </button>
-                    <input
-                      ref={dayEndPickerRef}
-                      type="time"
-                      className="native-picker-input"
-                      value={parseTime12To24(form.day_end_time)}
-                      onChange={(e) => {
-                        const textValue = fromLocalTimeValue(e.target.value);
-                        if (textValue) handleChange('day_end_time', textValue);
-                      }}
-                    />
                   </div>
                 </div>
               </div>
@@ -724,6 +802,71 @@ export default function EventScheduler() {
           <div><strong>Workflow Active:</strong> {eventState?.workflow_active ? 'Yes' : 'No'}</div>
         </div>
       </Card>
+
+      {pickerState.open && (
+        <div className="picker-modal-backdrop">
+          <div ref={pickerCardRef} className="picker-modal-card">
+            <div className="picker-modal-title">Select Time</div>
+            {pickerState.mode === 'datetime' && (
+              <div className="picker-modal-date-wrap">
+                <label className="block text-sm font-medium mb-1">Date</label>
+                <input
+                  type="date"
+                  className="input"
+                  value={pickerState.date}
+                  onChange={(e) => setPickerState((prev) => ({ ...prev, date: e.target.value }))}
+                />
+              </div>
+            )}
+            <div className="picker-time-grid">
+              <div className="picker-time-block">
+                <span className="picker-time-label">Hour</span>
+                <div className="picker-stepper">
+                  <button type="button" className="btn btn-secondary picker-step-btn" onClick={() => adjustPickerHour(-1)}>-</button>
+                  <span className="picker-step-value">{pad2(pickerState.hour12)}</span>
+                  <button type="button" className="btn btn-secondary picker-step-btn" onClick={() => adjustPickerHour(1)}>+</button>
+                </div>
+              </div>
+              <div className="picker-time-block">
+                <span className="picker-time-label">Minute</span>
+                <div className="picker-stepper">
+                  <button type="button" className="btn btn-secondary picker-step-btn" onClick={() => adjustPickerMinute(-1)}>-</button>
+                  <span className="picker-step-value">{pad2(pickerState.minute)}</span>
+                  <button type="button" className="btn btn-secondary picker-step-btn" onClick={() => adjustPickerMinute(1)}>+</button>
+                </div>
+              </div>
+              <div className="picker-time-block">
+                <span className="picker-time-label">AM / PM</span>
+                <div className="picker-meridiem">
+                  <button
+                    type="button"
+                    className={`btn ${pickerState.meridiem === 'AM' ? 'btn-primary' : 'btn-secondary'}`}
+                    onClick={() => setPickerState((prev) => ({ ...prev, meridiem: 'AM' }))}
+                  >
+                    AM
+                  </button>
+                  <button
+                    type="button"
+                    className={`btn ${pickerState.meridiem === 'PM' ? 'btn-primary' : 'btn-secondary'}`}
+                    onClick={() => setPickerState((prev) => ({ ...prev, meridiem: 'PM' }))}
+                  >
+                    PM
+                  </button>
+                </div>
+              </div>
+            </div>
+            <div className="picker-preview">
+              {pickerState.mode === 'datetime' && pickerState.date
+                ? `${fromLocalDateValue(pickerState.date)}, ${time12PartsToText(pickerState)}`
+                : time12PartsToText(pickerState)}
+            </div>
+            <div className="picker-modal-actions">
+              <button type="button" className="btn btn-secondary" onClick={closeTwelveHourPicker}>Cancel</button>
+              <button type="button" className="btn btn-primary" onClick={saveTwelveHourPicker}>Apply</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

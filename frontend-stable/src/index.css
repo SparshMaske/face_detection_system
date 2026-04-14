@@ -350,6 +350,103 @@ h4 {
   padding: 0;
 }
 
+.picker-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1200;
+  background: rgba(2, 6, 23, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+}
+
+.picker-modal-card {
+  width: min(460px, 100%);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 0.85rem;
+  box-shadow: 0 22px 40px -26px rgba(2, 6, 23, 0.75);
+  padding: 1rem;
+}
+
+.picker-modal-title {
+  font-size: 1rem;
+  font-weight: 700;
+  margin-bottom: 0.8rem;
+}
+
+.picker-modal-date-wrap {
+  margin-bottom: 0.85rem;
+}
+
+.picker-time-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.7rem;
+}
+
+.picker-time-block {
+  border: 1px solid var(--border);
+  border-radius: 0.72rem;
+  padding: 0.6rem;
+  background: var(--surface-soft);
+}
+
+.picker-time-label {
+  display: block;
+  font-size: 0.76rem;
+  font-weight: 700;
+  color: var(--text-muted);
+  margin-bottom: 0.45rem;
+}
+
+.picker-stepper {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.4rem;
+}
+
+.picker-step-btn {
+  min-width: 2rem;
+  padding: 0.32rem 0.42rem;
+}
+
+.picker-step-value {
+  min-width: 2rem;
+  text-align: center;
+  font-weight: 700;
+  font-size: 1rem;
+}
+
+.picker-meridiem {
+  display: flex;
+  gap: 0.35rem;
+}
+
+.picker-meridiem .btn {
+  flex: 1;
+  min-width: 0;
+}
+
+.picker-preview {
+  margin-top: 0.85rem;
+  border: 1px dashed var(--border);
+  border-radius: 0.6rem;
+  padding: 0.5rem 0.65rem;
+  font-size: 0.86rem;
+  color: var(--text-main);
+  background: var(--surface-soft);
+}
+
+.picker-modal-actions {
+  margin-top: 0.9rem;
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+}
+
 input[type="range"].input {
   padding: 0;
   border: none;
