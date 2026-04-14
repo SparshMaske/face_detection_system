@@ -1081,7 +1081,17 @@ class ReportGenerator:
             dt = _parse_any_datetime(raw_value)
             if dt is None:
                 return '-'
-            return dt.strftime('%d/%m/%Y %H:%M')
+            return dt.strftime('%d/%m/%Y %I:%M %p')
+
+        def _column_width_to_px(width_units):
+            # Excel width-unit to pixel approximation used by openpyxl consumers.
+            width = float(width_units or 8.43)
+            return int((width * 7) + 5)
+
+        def _row_height_to_px(height_points):
+            # 1 point ~= 1.333 px at 96 DPI.
+            points = float(height_points or 15.0)
+            return int(points * (96.0 / 72.0))
 
         def _extract_event_name_and_timestamp_from_filename(path):
             base = os.path.splitext(os.path.basename(path))[0]
@@ -1278,8 +1288,16 @@ class ReportGenerator:
                 if slot_visitor and snapshot_path and os.path.exists(snapshot_path):
                     try:
                         img = XLImage(snapshot_path)
-                        img.width = 110
-                        img.height = 110
+                        target_width = max(
+                            40,
+                            _column_width_to_px(sheet.column_dimensions[get_column_letter(label_col)].width)
+                            + _column_width_to_px(sheet.column_dimensions[get_column_letter(value_col)].width)
+                            - 2,
+                        )
+                        target_height = max(40, _row_height_to_px(sheet.row_dimensions[row_snapshot].height) - 2)
+                        # Fill the whole allocated snapshot slot.
+                        img.width = target_width
+                        img.height = target_height
                         img.anchor = f"{get_column_letter(label_col)}{row_snapshot}"
                         sheet.add_image(img)
                     except Exception:
