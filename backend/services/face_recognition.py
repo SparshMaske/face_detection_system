@@ -1,6 +1,8 @@
 import datetime
+import json
 import os
 import re
+import shutil
 import time
 from threading import Thread
 from typing import Dict, List, Optional, Set, Tuple
@@ -96,6 +98,7 @@ class FaceRecognitionService:
         self._frame_index_by_camera: Dict[str, int] = {}
         self._pending_db_changes: bool = False
         self._last_db_commit_mono: float = time.monotonic()
+        self._event_capture_buffers: Dict[str, Dict] = {}
         cascade_path = os.path.join(cv2.data.haarcascades, 'haarcascade_frontalface_default.xml')
         self._fallback_face_cascade = cv2.CascadeClassifier(cascade_path)
 
@@ -395,6 +398,277 @@ class FaceRecognitionService:
             return datetime.datetime.fromisoformat(str(value))
         except Exception:
             return None
+
+    @staticmethod
+    def _safe_token(raw_value: str) -> str:
+        text = str(raw_value or '').strip()
+        if not text:
+            return 'event'
+        cleaned = []
+        for ch in text:
+            if ch.isalnum() or ch in ('-', '_'):
+                cleaned.append(ch)
+            elif ch.isspace():
+                cleaned.append('_')
+            else:
+                cleaned.append('_')
+        normalized = ''.join(cleaned).strip('_')
+        return normalized or 'event'
+
+    def _is_deferred_event_mode(self, event_context: Optional[dict]) -> bool:
+        if not isinstance(event_context, dict):
+            return False
+        if not bool(event_context.get('workflow_active')):
+            return False
+        deferred_default = True
+        if has_app_context():
+            deferred_default = bool(current_app.config.get('DEFER_EVENT_RECOGNITION', True))
+        return deferred_default
+
+    def _event_temp_root(self) -> str:
+        reports_root = current_app.config.get('REPORTS_FOLDER')
+        root = os.path.join(reports_root, 'event_temp')
+        os.makedirs(root, exist_ok=True)
+        return root
+
+    def _event_temp_dir(self, event_id: str, event_name: Optional[str] = None) -> str:
+        safe_event_id = self._safe_token(event_id or 'event')
+        safe_name = self._safe_token(event_name or '')
+        folder_name = f"{safe_name}_{safe_event_id}" if safe_name else safe_event_id
+        return os.path.join(self._event_temp_root(), folder_name)
+
+    def _buffer_manifest_path(self, buffer_obj: Dict) -> str:
+        return os.path.join(buffer_obj['temp_dir'], 'captures.jsonl')
+
+    def _load_captures_from_manifest(self, manifest_path: str) -> List[Dict]:
+        captures = []
+        if not manifest_path or not os.path.exists(manifest_path):
+            return captures
+        try:
+            with open(manifest_path, 'r', encoding='utf-8') as fp:
+                for line in fp:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        item = json.loads(line)
+                        if isinstance(item, dict):
+                            captures.append(item)
+                    except Exception:
+                        continue
+        except Exception:
+            return []
+        return captures
+
+    def _append_capture_to_manifest(self, buffer_obj: Dict, capture_item: Dict):
+        manifest_path = self._buffer_manifest_path(buffer_obj)
+        try:
+            with open(manifest_path, 'a', encoding='utf-8') as fp:
+                fp.write(json.dumps(capture_item, ensure_ascii=True) + '\n')
+        except Exception:
+            # Keep runtime processing uninterrupted if disk append fails.
+            pass
+
+    def _get_or_create_event_capture_buffer(self, event_context: Optional[dict], camera_db_id: Optional[int]) -> Optional[Dict]:
+        if not isinstance(event_context, dict):
+            return None
+        event_id = str(event_context.get('event_id') or '').strip()
+        if not event_id:
+            return None
+
+        event_name = str(event_context.get('event_name') or '').strip()
+        start_dt = self._normalize_datetime_value(event_context.get('start_time'))
+        end_dt = self._normalize_datetime_value(event_context.get('end_time'))
+        key = event_id
+
+        buffer_obj = self._event_capture_buffers.get(key)
+        if buffer_obj is None:
+            temp_dir = self._event_temp_dir(event_id, event_name)
+            captures_dir = os.path.join(temp_dir, 'captures')
+            embeddings_dir = os.path.join(temp_dir, 'embeddings')
+            os.makedirs(captures_dir, exist_ok=True)
+            os.makedirs(embeddings_dir, exist_ok=True)
+
+            buffer_obj = {
+                'event_id': event_id,
+                'event_name': event_name,
+                'start_time': start_dt.isoformat() if start_dt else None,
+                'end_time': end_dt.isoformat() if end_dt else None,
+                'camera_id': camera_db_id,
+                'temp_dir': temp_dir,
+                'captures_dir': captures_dir,
+                'embeddings_dir': embeddings_dir,
+                'captures': [],
+                'tracks': [],
+                'next_seq': 1,
+            }
+            # Recover any persisted captures when process restarts.
+            persisted = self._load_captures_from_manifest(self._buffer_manifest_path(buffer_obj))
+            if persisted:
+                buffer_obj['captures'] = persisted
+                max_seq = 0
+                for item in persisted:
+                    try:
+                        max_seq = max(max_seq, int(item.get('seq') or 0))
+                    except Exception:
+                        continue
+                buffer_obj['next_seq'] = max_seq + 1
+
+            self._event_capture_buffers[key] = buffer_obj
+        else:
+            if camera_db_id is not None:
+                buffer_obj['camera_id'] = camera_db_id
+            if start_dt:
+                buffer_obj['start_time'] = start_dt.isoformat()
+            if end_dt:
+                buffer_obj['end_time'] = end_dt.isoformat()
+            if event_name:
+                buffer_obj['event_name'] = event_name
+
+        return buffer_obj
+
+    def _extract_face_to_shoulder_crop(self, frame, bbox):
+        x1, y1, x2, y2 = bbox
+        h, w = frame.shape[:2]
+        face_w = max(1, x2 - x1)
+        face_h = max(1, y2 - y1)
+
+        expand_x = int(face_w * 0.30)
+        expand_y_top = int(face_h * 0.40)
+        expand_y_bottom = int(face_h * 1.60)
+
+        nx1 = max(0, x1 - expand_x)
+        ny1 = max(0, y1 - expand_y_top)
+        nx2 = min(w, x2 + expand_x)
+        ny2 = min(h, y2 + expand_y_bottom)
+
+        crop = frame[ny1:ny2, nx1:nx2]
+        if crop.size == 0:
+            crop = frame[y1:y2, x1:x2]
+        return crop
+
+    def _purge_stale_event_tracks(self, buffer_obj: Dict, now_local: datetime.datetime):
+        buffer_obj['tracks'] = [
+            track for track in buffer_obj.get('tracks', [])
+            if (now_local - track.get('last_seen', now_local)).total_seconds() <= 2.8
+        ]
+
+    def _match_or_create_event_track(
+        self,
+        buffer_obj: Dict,
+        bbox,
+        now_local: datetime.datetime,
+        camera_db_id: Optional[int],
+    ) -> Dict:
+        self._purge_stale_event_tracks(buffer_obj, now_local)
+        tracks = buffer_obj.setdefault('tracks', [])
+        best_track = None
+        best_iou = 0.0
+        for track in tracks:
+            if camera_db_id is not None and track.get('camera_id') != camera_db_id:
+                continue
+            iou = self._iou(track.get('bbox'), bbox)
+            if iou > best_iou:
+                best_iou = iou
+                best_track = track
+
+        if best_track is None or best_iou < 0.35:
+            best_track = {
+                'bbox': bbox,
+                'camera_id': camera_db_id,
+                'last_seen': now_local,
+                'last_capture_at': None,
+            }
+            tracks.append(best_track)
+        else:
+            best_track['bbox'] = bbox
+            best_track['last_seen'] = now_local
+
+        return best_track
+
+    def _save_event_capture(
+        self,
+        buffer_obj: Dict,
+        frame,
+        bbox,
+        embedding: np.ndarray,
+        now_local: datetime.datetime,
+        det_score: float,
+        blur_value: float,
+        camera_db_id: Optional[int],
+    ) -> Optional[Dict]:
+        seq = int(buffer_obj.get('next_seq', 1))
+        buffer_obj['next_seq'] = seq + 1
+        capture_name = f"cap_{seq:06d}.jpg"
+        emb_name = f"cap_{seq:06d}.npy"
+        capture_path = os.path.join(buffer_obj['captures_dir'], capture_name)
+        emb_path = os.path.join(buffer_obj['embeddings_dir'], emb_name)
+
+        crop = self._extract_face_to_shoulder_crop(frame, bbox)
+        if crop.size == 0:
+            return None
+        if not bool(cv2.imwrite(capture_path, crop)):
+            return None
+        try:
+            np.save(emb_path, embedding.astype(np.float32))
+        except Exception:
+            try:
+                os.remove(capture_path)
+            except Exception:
+                pass
+            return None
+
+        capture_item = {
+            'seq': seq,
+            'timestamp': now_local.isoformat(),
+            'image_path': capture_path,
+            'embedding_path': emb_path,
+            'bbox': [int(bbox[0]), int(bbox[1]), int(bbox[2]), int(bbox[3])],
+            'det_score': float(det_score or 0.0),
+            'blur': float(blur_value or 0.0),
+            'camera_id': camera_db_id,
+        }
+        buffer_obj.setdefault('captures', []).append(capture_item)
+        self._append_capture_to_manifest(buffer_obj, capture_item)
+        return capture_item
+
+    def _load_event_buffer_by_id(self, event_id: str, event_name: Optional[str] = None) -> Optional[Dict]:
+        if not event_id:
+            return None
+        existing = self._event_capture_buffers.get(event_id)
+        if existing is not None:
+            return existing
+
+        temp_dir = self._event_temp_dir(event_id, event_name)
+        if not os.path.isdir(temp_dir):
+            return None
+        captures_dir = os.path.join(temp_dir, 'captures')
+        embeddings_dir = os.path.join(temp_dir, 'embeddings')
+        if not os.path.isdir(captures_dir) or not os.path.isdir(embeddings_dir):
+            return None
+
+        buffer_obj = {
+            'event_id': event_id,
+            'event_name': event_name or '',
+            'start_time': None,
+            'end_time': None,
+            'camera_id': None,
+            'temp_dir': temp_dir,
+            'captures_dir': captures_dir,
+            'embeddings_dir': embeddings_dir,
+            'captures': self._load_captures_from_manifest(os.path.join(temp_dir, 'captures.jsonl')),
+            'tracks': [],
+            'next_seq': 1,
+        }
+        max_seq = 0
+        for item in buffer_obj['captures']:
+            try:
+                max_seq = max(max_seq, int(item.get('seq') or 0))
+            except Exception:
+                continue
+        buffer_obj['next_seq'] = max_seq + 1
+        self._event_capture_buffers[event_id] = buffer_obj
+        return buffer_obj
 
     def _derive_event_key(self, event_context: Optional[dict]) -> Optional[str]:
         if not event_context or not isinstance(event_context, dict):
@@ -794,6 +1068,427 @@ class FaceRecognitionService:
 
         return None, None, -1.0
 
+    def _process_frame_for_deferred_event(self, frame, camera=None, event_context=None, return_stats=False):
+        now_local = datetime.datetime.now()
+        cfg = current_app.config
+        conf_threshold = float(cfg.get('FACE_CONFIDENCE_THRESHOLD', 0.5))
+        blur_threshold = float(cfg.get('BLUR_THRESHOLD', 50.0))
+        tilt_threshold = float(cfg.get('TILT_THRESHOLD', 0.25))
+        min_face_area = int(cfg.get('MIN_FACE_AREA', 11000))
+        capture_interval = float(cfg.get('EVENT_CAPTURE_INTERVAL_SEC', 0.85))
+        max_event_captures = int(cfg.get('EVENT_MAX_CAPTURES', 99999) or 99999)
+
+        camera_db_id = getattr(camera, 'id', None)
+        camera_type = str(getattr(camera, 'camera_type', '') or '').lower()
+        is_browser_camera = camera_type == 'browser'
+        if is_browser_camera:
+            conf_threshold = min(conf_threshold, 0.20)
+            blur_threshold = min(blur_threshold, 22.0)
+            min_face_area = min(min_face_area, 2600)
+            tilt_threshold = max(tilt_threshold, 0.45)
+
+        buffer_obj = self._get_or_create_event_capture_buffer(event_context, camera_db_id)
+        faces = self._detect_faces(frame)
+        stats = {
+            'faces_detected': int(len(faces)),
+            'staff_matches': 0,
+            'new_visitors': 0,
+            'known_visitors': 0,
+            'rejected_faces': 0,
+            'captures_saved': 0,
+        }
+
+        for face in faces:
+            box = face.bbox.astype(int)
+            x1, y1, x2, y2 = map(int, box)
+            h, w = frame.shape[:2]
+            x1 = max(0, min(x1, w - 1))
+            x2 = max(0, min(x2, w - 1))
+            y1 = max(0, min(y1, h - 1))
+            y2 = max(0, min(y2, h - 1))
+            if x2 <= x1 or y2 <= y1:
+                continue
+
+            current_bbox = (x1, y1, x2, y2)
+            score = float(getattr(face, 'det_score', 0.0))
+            if score < conf_threshold:
+                stats['rejected_faces'] += 1
+                continue
+
+            face_area = (x2 - x1) * (y2 - y1)
+            if face_area < min_face_area:
+                stats['rejected_faces'] += 1
+                continue
+
+            try:
+                gray = cv2.cvtColor(frame[y1:y2, x1:x2], cv2.COLOR_BGR2GRAY)
+                blur_value = float(cv2.Laplacian(gray, cv2.CV_64F).var())
+            except Exception:
+                blur_value = 0.0
+            if blur_value < blur_threshold:
+                stats['rejected_faces'] += 1
+                continue
+
+            has_pose, yaw_ratio, _ = self._tilt_metrics(face)
+            if has_pose and yaw_ratio > tilt_threshold:
+                stats['rejected_faces'] += 1
+                continue
+
+            emb = getattr(face, 'normed_embedding', None)
+            if emb is None:
+                emb = getattr(face, 'embedding', None)
+            emb = self._norm(emb)
+            if emb is None:
+                stats['rejected_faces'] += 1
+                continue
+
+            if buffer_obj is not None and len(buffer_obj.get('captures', [])) < max_event_captures:
+                track = self._match_or_create_event_track(
+                    buffer_obj,
+                    current_bbox,
+                    now_local,
+                    camera_db_id,
+                )
+                last_capture_at = track.get('last_capture_at')
+                should_capture = (
+                    last_capture_at is None
+                    or (now_local - last_capture_at).total_seconds() >= max(0.20, capture_interval)
+                )
+                if should_capture:
+                    saved_item = self._save_event_capture(
+                        buffer_obj,
+                        frame,
+                        current_bbox,
+                        emb,
+                        now_local,
+                        det_score=score,
+                        blur_value=blur_value,
+                        camera_db_id=camera_db_id,
+                    )
+                    if saved_item is not None:
+                        track['last_capture_at'] = now_local
+                        stats['captures_saved'] += 1
+
+            # Deferred mode explicitly shows only face-detected marker and no IDs.
+            self._draw_papp_style_box(
+                frame,
+                current_bbox,
+                'Face Detected',
+                (0, 255, 0),
+                thickness=1,
+                font_scale=0.55,
+                text_thickness=1,
+                y_offset=-10,
+            )
+
+        if not faces:
+            fallback_boxes = self._fast_detect_bboxes(frame)
+            for bbox in fallback_boxes:
+                self._draw_papp_style_box(
+                    frame,
+                    bbox,
+                    'Face Detected',
+                    (0, 215, 255),
+                    thickness=1,
+                    font_scale=0.5,
+                    text_thickness=1,
+                    y_offset=0,
+                )
+            stats['faces_detected'] = max(int(stats.get('faces_detected', 0)), int(len(fallback_boxes)))
+
+        if return_stats:
+            return frame, stats
+        return frame
+
+    def _load_capture_embedding(self, capture_item: Dict) -> Optional[np.ndarray]:
+        emb_path = str(capture_item.get('embedding_path') or '').strip()
+        if not emb_path or not os.path.exists(emb_path):
+            return None
+        try:
+            arr = np.load(emb_path)
+        except Exception:
+            return None
+        return self._norm(arr)
+
+    def _cluster_event_captures(self, captures: List[Dict], threshold: float) -> List[Dict]:
+        clusters: List[Dict] = []
+        sorted_captures = sorted(captures, key=lambda item: item.get('timestamp') or datetime.datetime.min)
+
+        for capture in sorted_captures:
+            emb = capture.get('embedding')
+            if emb is None:
+                continue
+
+            best_idx = -1
+            best_score = -1.0
+            for idx, cluster in enumerate(clusters):
+                centroid = cluster.get('centroid')
+                if centroid is None:
+                    continue
+                score = float(np.dot(emb, centroid))
+                if score > best_score:
+                    best_score = score
+                    best_idx = idx
+
+            if best_idx >= 0 and best_score >= threshold:
+                cluster = clusters[best_idx]
+                cluster.setdefault('samples', []).append(capture)
+                ts = capture.get('timestamp')
+                if ts is not None:
+                    if cluster.get('first_seen') is None or ts < cluster['first_seen']:
+                        cluster['first_seen'] = ts
+                        cluster['snapshot_path'] = capture.get('image_path')
+                    if cluster.get('last_seen') is None or ts > cluster['last_seen']:
+                        cluster['last_seen'] = ts
+                sample_embeddings = [item.get('embedding') for item in cluster.get('samples', []) if item.get('embedding') is not None]
+                if sample_embeddings:
+                    centroid = self._norm(np.mean(np.stack(sample_embeddings[-12:]), axis=0))
+                    if centroid is not None:
+                        cluster['centroid'] = centroid
+                continue
+
+            ts = capture.get('timestamp')
+            clusters.append({
+                'samples': [capture],
+                'centroid': emb,
+                'first_seen': ts,
+                'last_seen': ts,
+                'snapshot_path': capture.get('image_path'),
+            })
+
+        # Merge any residual duplicate clusters conservatively.
+        merged = True
+        while merged and len(clusters) > 1:
+            merged = False
+            for i in range(len(clusters)):
+                if merged:
+                    break
+                for j in range(i + 1, len(clusters)):
+                    score = float(np.dot(clusters[i]['centroid'], clusters[j]['centroid']))
+                    if score < (threshold + 0.02):
+                        continue
+                    left = clusters[i]
+                    right = clusters[j]
+                    left['samples'].extend(right.get('samples', []))
+                    left['samples'] = sorted(
+                        left['samples'],
+                        key=lambda item: item.get('timestamp') or datetime.datetime.min,
+                    )
+                    left['first_seen'] = min(
+                        [item.get('timestamp') for item in left['samples'] if item.get('timestamp') is not None] or [left.get('first_seen')]
+                    )
+                    left['last_seen'] = max(
+                        [item.get('timestamp') for item in left['samples'] if item.get('timestamp') is not None] or [left.get('last_seen')]
+                    )
+                    left['snapshot_path'] = left['samples'][0].get('image_path') if left['samples'] else left.get('snapshot_path')
+                    sample_embeddings = [item.get('embedding') for item in left['samples'] if item.get('embedding') is not None]
+                    if sample_embeddings:
+                        centroid = self._norm(np.mean(np.stack(sample_embeddings[-16:]), axis=0))
+                        if centroid is not None:
+                            left['centroid'] = centroid
+                    del clusters[j]
+                    merged = True
+                    break
+
+        clusters.sort(key=lambda item: item.get('first_seen') or datetime.datetime.max)
+        return clusters
+
+    def _copy_capture_for_visitor(self, image_path: Optional[str], visitor_code: str) -> Optional[str]:
+        if not image_path or not os.path.exists(image_path):
+            return None
+        filename = f"{visitor_code}_{datetime.datetime.now().strftime('%Y%m%d%H%M%S%f')}.jpg"
+        rel_path = os.path.join('visitors', filename)
+        abs_path = os.path.join(current_app.config['UPLOAD_FOLDER'], rel_path)
+        os.makedirs(os.path.dirname(abs_path), exist_ok=True)
+        try:
+            shutil.copyfile(image_path, abs_path)
+            return rel_path
+        except Exception:
+            return None
+
+    def finalize_event_data(self, event_record: Dict, delete_temp: bool = False) -> Dict:
+        event_id = str((event_record or {}).get('event_id') or '').strip()
+        event_name = str((event_record or {}).get('event_name') or '').strip()
+        if not event_id:
+            raise ValueError('event_id is required to finalize event data')
+
+        buffer_obj = self._load_event_buffer_by_id(event_id, event_name=event_name)
+        if buffer_obj is None:
+            return {
+                'event_id': event_id,
+                'event_name': event_name,
+                'captured_faces': 0,
+                'staff_matches': 0,
+                'visitor_clusters': 0,
+                'new_visitors': 0,
+                'existing_visitors': 0,
+                'deleted_temp_data': bool(delete_temp),
+            }
+
+        captures = []
+        for item in buffer_obj.get('captures', []):
+            ts = self._normalize_datetime_value(item.get('timestamp'))
+            emb = self._load_capture_embedding(item)
+            if ts is None or emb is None:
+                continue
+            captures.append({
+                **item,
+                'timestamp': ts,
+                'embedding': emb,
+            })
+
+        if not captures:
+            deleted = self.delete_event_temp_data(event_id, event_name=event_name) if delete_temp else False
+            return {
+                'event_id': event_id,
+                'event_name': event_name,
+                'captured_faces': 0,
+                'staff_matches': 0,
+                'visitor_clusters': 0,
+                'new_visitors': 0,
+                'existing_visitors': 0,
+                'deleted_temp_data': bool(deleted),
+            }
+
+        self._sync_embedding_cache(force=True)
+        self._sync_staff_cache(force=True)
+        visitor_threshold = float(current_app.config.get('FACE_SIMILARITY_THRESHOLD', 0.5))
+        staff_threshold = float(current_app.config.get('STAFF_SIMILARITY_THRESHOLD', 0.65))
+        cluster_threshold = float(current_app.config.get('EVENT_CLUSTER_THRESHOLD', max(visitor_threshold, 0.60)))
+
+        staff_matches = 0
+        visitor_capture_rows = []
+        for capture in captures:
+            matched_staff, _score = self.find_matching_staff(
+                capture['embedding'],
+                db.session,
+                threshold=staff_threshold,
+                with_score=True,
+            )
+            if matched_staff is not None:
+                staff_matches += 1
+                continue
+            visitor_capture_rows.append(capture)
+
+        clusters = self._cluster_event_captures(visitor_capture_rows, threshold=cluster_threshold)
+        start_dt = self._normalize_datetime_value((event_record or {}).get('start_time'))
+        end_dt = self._normalize_datetime_value((event_record or {}).get('end_time'))
+
+        new_visitors = 0
+        existing_visitors = 0
+        camera_db_id = buffer_obj.get('camera_id')
+        if camera_db_id is None:
+            camera_db_id = None
+            if isinstance(event_record, dict):
+                # Event registry stores camera_id as string camera token; DB id remains optional.
+                camera_db_id = None
+
+        for cluster in clusters:
+            first_seen = cluster.get('first_seen') or datetime.datetime.now()
+            last_seen = cluster.get('last_seen') or first_seen
+            if start_dt:
+                first_seen = max(first_seen, start_dt)
+            if end_dt:
+                last_seen = min(last_seen, end_dt)
+            if last_seen < first_seen:
+                last_seen = first_seen
+
+            matched_db_id, _match_score = self._match_visitor(cluster.get('centroid'), threshold=visitor_threshold)
+            visitor = Visitor.query.get(matched_db_id) if matched_db_id is not None else None
+
+            if visitor is None:
+                visitor_code = self._get_next_visitor_id()
+                snapshot_rel = self._copy_capture_for_visitor(cluster.get('snapshot_path'), visitor_code)
+                visitor = Visitor(
+                    visitor_id=visitor_code,
+                    primary_image_path=snapshot_rel,
+                    embedding=cluster.get('centroid').astype(np.float32).tobytes() if cluster.get('centroid') is not None else None,
+                    first_seen=first_seen,
+                    last_seen=last_seen,
+                    visit_count=1,
+                )
+                db.session.add(visitor)
+                db.session.flush()
+                if snapshot_rel:
+                    db.session.add(VisitorImage(visitor_id=visitor.id, image_path=snapshot_rel, captured_at=first_seen))
+                if cluster.get('centroid') is not None:
+                    self._embeddings[visitor.id] = cluster['centroid']
+                    self._embedding_history[visitor.id] = [cluster['centroid']]
+                self._visitor_codes[visitor.id] = visitor_code
+                new_visitors += 1
+            else:
+                existing_visitors += 1
+                visitor.first_seen = min(visitor.first_seen or first_seen, first_seen)
+                visitor.last_seen = max(visitor.last_seen or last_seen, last_seen)
+                visitor.visit_count = int(visitor.visit_count or 0) + 1
+                if cluster.get('centroid') is not None:
+                    updated = self._append_embedding_sample(visitor.id, cluster['centroid'], limit=8)
+                    if updated is not None:
+                        visitor.embedding = updated.astype(np.float32).tobytes()
+                snapshot_rel = self._copy_capture_for_visitor(cluster.get('snapshot_path'), visitor.visitor_id)
+                if snapshot_rel:
+                    visitor.primary_image_path = snapshot_rel
+                    db.session.add(VisitorImage(visitor_id=visitor.id, image_path=snapshot_rel, captured_at=first_seen))
+
+            session = VisitorSession(
+                visitor_id=visitor.id,
+                camera_id=camera_db_id,
+                entry_time=first_seen,
+                exit_time=last_seen,
+                is_active=False,
+            )
+            db.session.add(session)
+
+        try:
+            db.session.commit()
+        except Exception:
+            db.session.rollback()
+            raise
+
+        self._sync_embedding_cache(force=True)
+        deleted = self.delete_event_temp_data(event_id, event_name=event_name) if delete_temp else False
+        return {
+            'event_id': event_id,
+            'event_name': event_name,
+            'captured_faces': len(captures),
+            'staff_matches': staff_matches,
+            'visitor_clusters': len(clusters),
+            'new_visitors': new_visitors,
+            'existing_visitors': existing_visitors,
+            'deleted_temp_data': bool(deleted),
+        }
+
+    def delete_event_temp_data(self, event_id: str, event_name: Optional[str] = None) -> bool:
+        if not event_id:
+            return False
+        buffer_obj = self._event_capture_buffers.pop(event_id, None)
+        temp_dir = None
+        if buffer_obj:
+            temp_dir = buffer_obj.get('temp_dir')
+        if not temp_dir:
+            temp_dir = self._event_temp_dir(event_id, event_name=event_name)
+        if not temp_dir or not os.path.isdir(temp_dir):
+            return False
+        try:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+            return True
+        except Exception:
+            return False
+
+    def get_event_temp_status(self, event_id: str, event_name: Optional[str] = None) -> Dict:
+        if not event_id:
+            return {'event_id': '', 'capture_count': 0, 'temp_data_exists': False}
+        buffer_obj = self._load_event_buffer_by_id(event_id, event_name=event_name)
+        if buffer_obj is None:
+            return {'event_id': event_id, 'capture_count': 0, 'temp_data_exists': False}
+        capture_count = len(buffer_obj.get('captures', []))
+        temp_data_exists = os.path.isdir(buffer_obj.get('temp_dir', ''))
+        return {
+            'event_id': event_id,
+            'capture_count': capture_count,
+            'temp_data_exists': bool(temp_data_exists and capture_count > 0),
+        }
+
     def _detect_faces(self, frame):
         try:
             rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -1030,6 +1725,14 @@ class FaceRecognitionService:
 
     def process_frame_for_stream(self, frame, camera=None, event_context=None, return_stats=False):
         now_local = datetime.datetime.now()
+        if self._is_deferred_event_mode(event_context):
+            return self._process_frame_for_deferred_event(
+                frame,
+                camera=camera,
+                event_context=event_context,
+                return_stats=return_stats,
+            )
+
         self._sync_embedding_cache()
         self._sync_staff_cache()
         self._ensure_event_identity_state(event_context)

@@ -19,3 +19,12 @@ export const downloadCompletedEventExcel = async (eventId) =>
   api.get(`/events/completed/${encodeURIComponent(eventId)}/export-excel`, {
     responseType: 'blob',
   });
+
+export const finalizeCompletedEvent = async (eventId) =>
+  api.post(`/events/completed/${encodeURIComponent(eventId)}/finalize`);
+
+export const finalizeAndDeleteCompletedEventData = async (eventId) =>
+  api.post(`/events/completed/${encodeURIComponent(eventId)}/finalize-delete`);
+
+export const getCompletedEventTempStatus = async (eventId) =>
+  api.get(`/events/completed/${encodeURIComponent(eventId)}/temp-status`);

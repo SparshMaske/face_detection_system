@@ -3,6 +3,8 @@ import Card from '../components/Card';
 import {
   deleteScheduledEvent,
   downloadCompletedEventExcel,
+  finalizeAndDeleteCompletedEventData,
+  finalizeCompletedEvent,
   getEventManagement,
 } from '../services/eventService';
 import { formatDateTime12h } from '../utils/formatters';
@@ -24,7 +26,9 @@ export default function EventManagement() {
   const [completedEvents, setCompletedEvents] = useState([]);
   const [busyDeleteId, setBusyDeleteId] = useState('');
   const [busyDownloadId, setBusyDownloadId] = useState('');
+  const [busyFinalizeKey, setBusyFinalizeKey] = useState('');
   const [completedSearch, setCompletedSearch] = useState('');
+  const [notice, setNotice] = useState('');
 
   const fetchManagement = useCallback(async () => {
     try {
@@ -81,6 +85,42 @@ export default function EventManagement() {
     }
   };
 
+  const handleFinalizeEvent = async (eventItem, deleteTempData = false) => {
+    const eventId = eventItem?.event_id;
+    if (!eventId) return;
+
+    if (deleteTempData) {
+      const confirmed = window.confirm(
+        'Finalize this event and delete temporary captured embeddings/images for this event?',
+      );
+      if (!confirmed) return;
+    }
+
+    const busyKey = `${eventId}:${deleteTempData ? 'delete' : 'finalize'}`;
+    try {
+      setBusyFinalizeKey(busyKey);
+      setNotice('');
+      setError('');
+      const res = deleteTempData
+        ? await finalizeAndDeleteCompletedEventData(eventId)
+        : await finalizeCompletedEvent(eventId);
+      const summary = res?.data?.summary || {};
+      const message = res?.data?.message || 'Event finalized.';
+      const eventTitle = eventItem?.event_name || eventId;
+      const captureCount = Number(summary?.captured_faces || 0);
+      const clusterCount = Number(summary?.visitor_clusters || 0);
+      const staffCount = Number(summary?.staff_matches || 0);
+      setNotice(
+        `${eventTitle}: ${message} Captures: ${captureCount}, Visitors: ${clusterCount}, Staff filtered: ${staffCount}.`,
+      );
+      await fetchManagement();
+    } catch (err) {
+      setError(err?.response?.data?.error || 'Unable to finalize completed event');
+    } finally {
+      setBusyFinalizeKey('');
+    }
+  };
+
   const handleDownloadExcel = async (eventItem) => {
     const eventId = eventItem?.event_id;
     if (!eventId) return;
@@ -117,6 +157,7 @@ export default function EventManagement() {
     <div className="space-y-6">
       <h1 className="text-2xl font-bold">Event Management</h1>
       {error && <div className="text-red-600 text-sm">{error}</div>}
+      {notice && <div className="text-green-600 text-sm">{notice}</div>}
 
       <Card title="Scheduled Events">
         {schedulingLocked && (
@@ -212,6 +253,8 @@ export default function EventManagement() {
                   <th>Event</th>
                   <th>Window</th>
                   <th>Completed At</th>
+                  <th>Finalization</th>
+                  <th>Actions</th>
                   <th>Excel</th>
                 </tr>
               </thead>
@@ -221,6 +264,51 @@ export default function EventManagement() {
                     <td>{eventItem.event_name || 'Untitled Event'}</td>
                     <td>{fmtWindow(eventItem)}</td>
                     <td>{fmtDateTime(eventItem.completed_at || eventItem.end_time)}</td>
+                    <td>
+                      {eventItem.finalized_at ? (
+                        <div className="flex flex-col gap-1">
+                          <span className="badge badge-green">Finalized</span>
+                          <span className="text-xs text-gray-500">
+                            {fmtDateTime(eventItem.finalized_at)}
+                          </span>
+                          {eventItem.temp_data_deleted && (
+                            <span className="text-xs text-gray-500">Temp data deleted</span>
+                          )}
+                        </div>
+                      ) : (
+                        <span className="badge">Pending</span>
+                      )}
+                    </td>
+                    <td>
+                      <div className="flex flex-wrap gap-2">
+                        <button
+                          type="button"
+                          className="btn btn-secondary"
+                          onClick={() => handleFinalizeEvent(eventItem, false)}
+                          disabled={
+                            !!eventItem.finalized_at ||
+                            busyFinalizeKey === `${eventItem.event_id}:finalize` ||
+                            busyFinalizeKey === `${eventItem.event_id}:delete`
+                          }
+                        >
+                          {busyFinalizeKey === `${eventItem.event_id}:finalize` ? 'Finalizing...' : 'Finalize'}
+                        </button>
+                        <button
+                          type="button"
+                          className="btn btn-danger-outline"
+                          onClick={() => handleFinalizeEvent(eventItem, true)}
+                          disabled={
+                            !!eventItem.temp_data_deleted ||
+                            busyFinalizeKey === `${eventItem.event_id}:finalize` ||
+                            busyFinalizeKey === `${eventItem.event_id}:delete`
+                          }
+                        >
+                          {busyFinalizeKey === `${eventItem.event_id}:delete`
+                            ? 'Finalizing...'
+                            : 'Finalize & Delete'}
+                        </button>
+                      </div>
+                    </td>
                     <td>
                       <button
                         type="button"

@@ -5,7 +5,7 @@ from datetime import datetime, time as time_cls, timedelta, timezone
 from threading import Lock
 from typing import Dict, List, Optional, Tuple
 
-from flask import jsonify, request, send_file
+from flask import current_app, jsonify, request, send_file
 from flask_jwt_extended import jwt_required
 
 from models import db
@@ -268,6 +268,10 @@ def _normalize_event_record(record: Dict) -> Optional[Dict]:
         'created_at': record.get('created_at') or _now().isoformat(),
         'updated_at': record.get('updated_at') or _now().isoformat(),
         'completed_at': record.get('completed_at'),
+        'finalized_at': record.get('finalized_at'),
+        'finalize_summary': record.get('finalize_summary') if isinstance(record.get('finalize_summary'), dict) else None,
+        'temp_data_deleted': bool(record.get('temp_data_deleted', False)),
+        'temp_data_deleted_at': record.get('temp_data_deleted_at'),
     }
 
 
@@ -316,6 +320,10 @@ def _load_event_registry() -> List[Dict]:
             'created_at': item.get('created_at') or now.isoformat(),
             'updated_at': now.isoformat(),
             'completed_at': end_dt.isoformat() if status == 'completed' else None,
+            'finalized_at': None,
+            'finalize_summary': None,
+            'temp_data_deleted': False,
+            'temp_data_deleted_at': None,
         })
         if seeded:
             normalized.append(seeded)
@@ -354,6 +362,10 @@ def _serialize_record(record: Dict) -> Dict:
         'created_at': record.get('created_at'),
         'updated_at': record.get('updated_at'),
         'completed_at': record.get('completed_at'),
+        'finalized_at': record.get('finalized_at'),
+        'finalize_summary': record.get('finalize_summary') if isinstance(record.get('finalize_summary'), dict) else None,
+        'temp_data_deleted': bool(record.get('temp_data_deleted', False)),
+        'temp_data_deleted_at': record.get('temp_data_deleted_at'),
     }
 
 
@@ -788,6 +800,10 @@ def schedule_event():
                 'created_at': now.isoformat(),
                 'updated_at': now.isoformat(),
                 'completed_at': None,
+                'finalized_at': None,
+                'finalize_summary': None,
+                'temp_data_deleted': False,
+                'temp_data_deleted_at': None,
             }
             records.append(record)
             created_records.append(record)
@@ -965,6 +981,179 @@ def delete_scheduled_event(event_id):
         _save_event_registry(records)
         _sync_state_with_time()
         return jsonify({'message': 'Scheduled event deleted'})
+
+
+def _mark_event_finalized(event_id: str, summary: Dict, mark_temp_deleted: bool = False) -> Optional[Dict]:
+    records = _load_event_registry()
+    _sync_registry_status(records)
+    target = _find_event_by_id(records, event_id)
+    if target is None:
+        return None
+
+    now_iso = _now().isoformat()
+    if not target.get('finalized_at'):
+        target['finalized_at'] = now_iso
+    target['finalize_summary'] = summary if isinstance(summary, dict) else None
+    if mark_temp_deleted:
+        target['temp_data_deleted'] = True
+        target['temp_data_deleted_at'] = now_iso
+    target['updated_at'] = now_iso
+    _save_event_registry(records)
+    return _serialize_record(target)
+
+
+def _completed_event_snapshot(event_id: str) -> Tuple[Optional[Dict], Optional[str], int]:
+    with _EVENT_LOCK:
+        records = _load_event_registry()
+        _sync_registry_status(records)
+        event_record = _find_event_by_id(records, event_id)
+        if event_record is None:
+            return None, 'Event not found', 404
+
+        start_dt, end_dt = _record_window(event_record)
+        if not start_dt or not end_dt:
+            return None, 'Invalid event window', 400
+
+        status = str(event_record.get('status') or '').lower()
+        if status != 'completed' and _now() <= end_dt:
+            return None, 'Finalize is available only after event completion', 400
+
+        return _serialize_record(event_record), None, 200
+
+
+@events_bp.route('/completed/<event_id>/temp-status', methods=['GET'])
+@jwt_required()
+def get_completed_event_temp_status(event_id):
+    event_snapshot, error_message, status_code = _completed_event_snapshot(event_id)
+    if event_snapshot is None:
+        return jsonify({'error': error_message}), status_code
+
+    try:
+        from services.face_recognition import FaceRecognitionService
+        fr_service = FaceRecognitionService()
+        status = fr_service.get_event_temp_status(
+            event_id=event_id,
+            event_name=event_snapshot.get('event_name') or '',
+        )
+    except Exception as exc:
+        current_app.logger.warning("Failed to read temp event status for %s: %s", event_id, exc)
+        return jsonify({'error': f'Unable to read temp event data: {exc}'}), 500
+
+    return jsonify({
+        'event': event_snapshot,
+        'temp_status': status,
+    })
+
+
+@events_bp.route('/completed/<event_id>/finalize', methods=['POST'])
+@jwt_required()
+def finalize_completed_event(event_id):
+    event_snapshot, error_message, status_code = _completed_event_snapshot(event_id)
+    if event_snapshot is None:
+        return jsonify({'error': error_message}), status_code
+
+    already_finalized = bool(event_snapshot.get('finalized_at'))
+    if already_finalized:
+        return jsonify({
+            'event': event_snapshot,
+            'summary': event_snapshot.get('finalize_summary') or {},
+            'already_finalized': True,
+            'message': 'Event data is already finalized.',
+        }), 200
+
+    try:
+        from services.face_recognition import FaceRecognitionService
+        fr_service = FaceRecognitionService()
+        summary = fr_service.finalize_event_data(event_snapshot, delete_temp=False)
+    except Exception as exc:
+        current_app.logger.warning("Failed to finalize event %s: %s", event_id, exc)
+        return jsonify({'error': f'Failed to finalize event data: {exc}'}), 500
+
+    with _EVENT_LOCK:
+        updated_record = _mark_event_finalized(
+            event_id=event_id,
+            summary=summary,
+            mark_temp_deleted=bool(summary.get('deleted_temp_data', False)),
+        )
+    if updated_record is None:
+        return jsonify({'error': 'Event not found during finalize update'}), 404
+
+    return jsonify({
+        'event': updated_record,
+        'summary': summary,
+        'already_finalized': False,
+        'message': 'Event finalized successfully.',
+    })
+
+
+@events_bp.route('/completed/<event_id>/finalize-delete', methods=['POST'])
+@jwt_required()
+def finalize_and_delete_completed_event_data(event_id):
+    event_snapshot, error_message, status_code = _completed_event_snapshot(event_id)
+    if event_snapshot is None:
+        return jsonify({'error': error_message}), status_code
+
+    try:
+        from services.face_recognition import FaceRecognitionService
+        fr_service = FaceRecognitionService()
+    except Exception as exc:
+        current_app.logger.warning("Failed to initialize face service for finalize-delete %s: %s", event_id, exc)
+        return jsonify({'error': f'Failed to initialize face recognition service: {exc}'}), 500
+
+    already_finalized = bool(event_snapshot.get('finalized_at'))
+    temp_already_deleted = bool(event_snapshot.get('temp_data_deleted', False))
+
+    if already_finalized:
+        if temp_already_deleted:
+            return jsonify({
+                'event': event_snapshot,
+                'summary': event_snapshot.get('finalize_summary') or {},
+                'already_finalized': True,
+                'message': 'Event already finalized and temporary data already deleted.',
+            }), 200
+
+        deleted = fr_service.delete_event_temp_data(
+            event_id=event_id,
+            event_name=event_snapshot.get('event_name') or '',
+        )
+        summary = dict(event_snapshot.get('finalize_summary') or {})
+        summary['deleted_temp_data'] = bool(deleted)
+        with _EVENT_LOCK:
+            updated_record = _mark_event_finalized(
+                event_id=event_id,
+                summary=summary,
+                mark_temp_deleted=bool(deleted),
+            )
+        if updated_record is None:
+            return jsonify({'error': 'Event not found during finalize-delete update'}), 404
+        return jsonify({
+            'event': updated_record,
+            'summary': summary,
+            'already_finalized': True,
+            'message': 'Temporary event data deleted.',
+        }), 200
+
+    try:
+        summary = fr_service.finalize_event_data(event_snapshot, delete_temp=True)
+    except Exception as exc:
+        current_app.logger.warning("Failed to finalize-delete event %s: %s", event_id, exc)
+        return jsonify({'error': f'Failed to finalize and delete event data: {exc}'}), 500
+
+    with _EVENT_LOCK:
+        updated_record = _mark_event_finalized(
+            event_id=event_id,
+            summary=summary,
+            mark_temp_deleted=bool(summary.get('deleted_temp_data', True)),
+        )
+    if updated_record is None:
+        return jsonify({'error': 'Event not found during finalize-delete update'}), 404
+
+    return jsonify({
+        'event': updated_record,
+        'summary': summary,
+        'already_finalized': False,
+        'message': 'Event finalized and temporary data deleted.',
+    }), 200
 
 
 @events_bp.route('/completed/<event_id>/export-excel', methods=['GET'])
