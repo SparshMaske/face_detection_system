@@ -12,8 +12,7 @@ A comprehensive AI-powered visitor monitoring system with face recognition, real
 - **Analytics Dashboard**: Visualize visitor trends, peak hours, and footfall data
 - **Multi-camera Support**: Manage multiple camera feeds simultaneously
 - **Role-based Access**: Admin and viewer roles with appropriate permissions
-- **Dark Mode**: Eye-friendly interface for control room environments python -m pip install flask flask-cors flask-sqlalchemy flask-migrate flask-jwt-extended flask-login flask-wtf flask-bcrypt passlib
-
+- **Dark Mode**: Eye-friendly interface for control room environments 
 
 
 ## Technology Stack
